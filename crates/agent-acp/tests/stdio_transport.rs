@@ -29,8 +29,10 @@ use agent_acp::{method, ControlSubtype};
 #[cfg(unix)]
 use serde_json::Value;
 
+/// 等待上限。30s 是「等到条件成立」的上限而非性能预算：全量测试并行时
+/// 子进程调度会抖动，5s 偏紧。放宽不改变被测语义。
 #[cfg(unix)]
-const WAIT: Duration = Duration::from_secs(5);
+const WAIT: Duration = Duration::from_secs(30);
 
 /// 测试运行期写出的假 agent 脚本；Drop 时清理。
 #[cfg(unix)]

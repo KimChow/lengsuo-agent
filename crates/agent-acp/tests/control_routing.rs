@@ -19,7 +19,10 @@ use agent_acp::transport::{mock_transport, MockPeer};
 use agent_acp::ControlSubtype;
 use serde_json::json;
 
-const WAIT: Duration = Duration::from_secs(2);
+/// 轮询等待上限。取 30s 而非紧贴实际耗时：`cargo test --workspace` 并行时会与
+/// 数百用例抢 CPU，2s 会被调度抖动顶穿。这里只是「等到条件成立」的上限，
+/// 放宽不改变被测语义。
+const WAIT: Duration = Duration::from_secs(30);
 
 fn client_with(max_events: usize) -> (Client, MockPeer) {
     let (transport, peer) = mock_transport();

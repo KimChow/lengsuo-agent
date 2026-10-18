@@ -24,9 +24,9 @@ fn config(pid_file: Option<&Path>) -> ClientConfig {
         command = command.with_env("LENGSUO_TEST_PID_FILE", file.to_str().unwrap());
     }
     let mut cfg = ClientConfig::stdio(command, Framing::NewlineDelimited);
-    cfg.request_timeout = Duration::from_millis(800);
-    // 与 stdio_acceptance 同理：`--workspace` 并行时 Python 子进程冷启动会压线，
-    // 放宽握手/连接等待上限（不改变被测语义）。
+    // 与 stdio_acceptance 同理：`--workspace` 并行时 Python 夹具响应会压线，
+    // 放宽请求/握手等待上限（只放宽上限，不改变被测语义）。
+    cfg.request_timeout = Duration::from_secs(10);
     cfg.handshake_timeout = Duration::from_secs(30);
     cfg
 }

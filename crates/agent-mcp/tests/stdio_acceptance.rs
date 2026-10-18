@@ -15,7 +15,9 @@ fn config(framing: Framing) -> ClientConfig {
         StdioServerCommand::new("python3").with_args([script.to_str().unwrap(), mode]),
         framing,
     );
-    cfg.request_timeout = Duration::from_millis(500);
+    // 请求超时同样留余量：并发用例（10 个请求共用一个连接）在全量测试并行时
+    // 会与其它 crate 抢 CPU，500ms 压线抖动。放宽只影响等待上限，不改变被测语义。
+    cfg.request_timeout = Duration::from_secs(10);
     // 握手超时留充足余量：`cargo test --workspace` 会并行拉起大量用例，
     // 8 个 Python 子进程同时冷启动时 2s 会压线抖动（实测 --test-threads=1 稳定，
     // 并行偶发「连接结束，响应未送达」）。放宽只影响等待上限，不改变被测语义。
@@ -69,7 +71,7 @@ async fn concurrent_responses_are_correlated_by_id() {
         }));
     }
     for task in tasks {
-        tokio::time::timeout(Duration::from_secs(3), task)
+        tokio::time::timeout(Duration::from_secs(40), task)
             .await
             .unwrap()
             .unwrap();

@@ -18,7 +18,10 @@ use agent_acp::router::{ClientEvent, RpcOutcome, ACP_ERROR_CONNECTION_CLOSED};
 use agent_acp::transport::{mock_transport, SourceEvent};
 use serde_json::{json, Value};
 
-const WAIT: Duration = Duration::from_secs(2);
+/// 轮询等待上限。取 30s 而非紧贴实际耗时：`cargo test --workspace` 会并行拉起
+/// 数百个用例，2s 在高负载下会被路由线程的调度抖动顶穿（实测偶发「等待超时」）。
+/// 这里只是「等到条件成立」的上限，放宽不改变被测语义。
+const WAIT: Duration = Duration::from_secs(30);
 
 fn client_with(max_events: usize) -> (Client, agent_acp::transport::MockPeer) {
     let (transport, peer) = mock_transport();
