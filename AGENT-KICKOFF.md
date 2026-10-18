@@ -1,11 +1,11 @@
 # 轨道 D/E 开工说明 —— 智能体运行时与 GPUI 壳（M1 竖切）
 
 > **性质**：本文是轨道 D（智能体运行时）与轨道 E（GPUI 壳）开工的接口说明与任务分工，执行「新模块先说明接口、兼容范围和测试计划」门禁；用户已拍板开工（2026-10-16，见 [v1-scope-freeze](v1-scope-freeze.md) 变更记录）。
-> **工作仓**：`lengsuo-client`（GitHub 公开）；1.47 研究机隔离 worktree 开发，各自分支，**不直接 push main**。
+> **工作仓**：`lengsuo-agent`（GitHub 公开）。本文件记录拆分前历史：当时智能体线与网络线同在 `lengsuo-client`（现名 `lengsuo-network`）单仓内，1.47 研究机隔离 worktree 开发，各自分支，**不直接 push main**。
 > **规则**：单文件 700 硬 / 400 软；TDD 先失败再实现；基线不绿不得合并；功能完成后同批次更新文档；生产网络代码无 unsafe；GPL/AGPL/SSPL 不进依赖。
 > **行为基线**：[参考客户端 行为基线](ref-client-agent-baseline.md)；存储拍板 N9（不用 SQLite）；权限 deny-by-default。
 
-## 1. Crate 划分（lengsuo-client workspace 新成员）
+## 1. Crate 划分（拆分前在 lengsuo-client workspace 内新增，现为 lengsuo-agent 成员）
 
 | crate | 职责 | 依赖 | 轨道 |
 |---|---|---|---|

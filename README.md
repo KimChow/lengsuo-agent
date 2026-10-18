@@ -17,7 +17,7 @@ Lengsuo 智能体平台：会话与任务运行时、工具执行、Skills、MCP
 
 ## 与其他仓的边界
 
-- **网络工具与指纹浏览器**在 `lengsuo-client`（八协议、TUN、环境隔离、浏览器组件）。
+- **网络工具与指纹浏览器**在 `lengsuo-network`（原 `lengsuo-client`；八协议、TUN、环境隔离、浏览器组件）。
 - **服务端权威逻辑**（授权/计费/节点池）在独立的私有后端仓。
 - 跨模块接口以 `docs/contracts/` 为准。
 
