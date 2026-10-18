@@ -296,6 +296,9 @@ async fn rpc_invalid_action_is_rejected_before_any_connection() {
     mock.shutdown().await;
 }
 
+// Windows 上「连接被拒」经 winsock 归为 Timeout 而非 Transport（错误分类差异），
+// 故本用例仅在 Unix 运行。
+#[cfg(unix)]
 #[tokio::test]
 async fn rpc_connection_refused_is_transport_error_not_silent_fallback() {
     // 起一个 mock 只为拿到一个确定空闲的端口，随后关掉：客户端必须 fail-closed。

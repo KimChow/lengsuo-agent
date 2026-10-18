@@ -1,6 +1,9 @@
 //! 事件流隔离契约：`/events` 订阅按网关隔离域过滤 ——
 //! 其他 isolation 的会话事件不得越域推送（server.rs 的 stream 内过滤分支），
 //! `session:list` 同样只回本域会话。
+//! 仅在 Unix 运行：网关起服需写私有握手文件（ACL 保护），Windows 上该 ACL 未实现，
+//! `write_handshake` 按 fail-closed 返回 `Unsupported`。
+#![cfg(unix)]
 
 use agent_core::{
     provider::EchoProvider,

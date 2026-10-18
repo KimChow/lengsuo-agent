@@ -2,9 +2,13 @@
 
 use std::fs;
 
-use agent_memory::{append_daily, clear_daily, read_daily_tail, MemoryError, CAP_DAILY_LINE};
+use agent_memory::{append_daily, MemoryError, CAP_DAILY_LINE};
+#[cfg(unix)]
+use agent_memory::{clear_daily, read_daily_tail};
 
-use crate::{TempDir, OTHER_DAY, TODAY};
+#[cfg(unix)]
+use crate::OTHER_DAY;
+use crate::{TempDir, TODAY};
 
 /// §5.8 容量侧：超限 ⇒ CapExceeded 且不留下部分写入；恰好等于上限放行。
 #[test]

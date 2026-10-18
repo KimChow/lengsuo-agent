@@ -12,7 +12,7 @@ mod read;
 mod search;
 mod types;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod testutil;
 
 pub use error::ToolError;

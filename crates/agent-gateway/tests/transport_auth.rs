@@ -1,6 +1,9 @@
 //! 传输层鉴权与路由契约：所有端点统一走 `X-Gateway-Token` 中间件，
 //! 未匹配路由 404 信封，坏请求体 400 信封（HTTP 层仍 200）。
 //! 覆盖缺口：缺头 / 长度不符 token / fallback 路由 / JSON 解析失败 / GET 方法不允许。
+//! 仅在 Unix 运行：网关起服需写私有握手文件（ACL 保护），Windows 上该 ACL 未实现，
+//! `write_handshake` 按 fail-closed 返回 `Unsupported`。
+#![cfg(unix)]
 
 use agent_core::{provider::EchoProvider, runtime::Runtime, schema::Isolation};
 use agent_gateway::{GatewayConfig, GatewayHandle};

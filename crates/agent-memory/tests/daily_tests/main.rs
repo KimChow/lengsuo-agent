@@ -10,9 +10,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use agent_memory::{
-    append_daily, clear_daily, read_daily_tail, MemoryError, MemoryPaths, NaiveDate,
-};
+#[cfg(unix)]
+use agent_memory::{append_daily, clear_daily};
+use agent_memory::{read_daily_tail, MemoryError, MemoryPaths, NaiveDate};
 
 mod basics;
 mod capacity_and_io;

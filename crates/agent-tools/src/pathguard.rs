@@ -78,6 +78,7 @@ pub(crate) fn normalize(p: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use crate::testutil::TempDir;
 
     use super::*;
@@ -86,6 +87,9 @@ mod tests {
         crate::FsToolbox::new(workspace)
     }
 
+    // 以下三条断言硬编码 Unix 绝对路径 `/tmp/ws` 并比较规范化结果；
+    // Windows 会补盘符并改用 `\` 分隔符，字面量 PathBuf 不参与规范化 ⇒ 语义不同。
+    #[cfg(unix)]
     #[test]
     fn guard_接受相对路径并折叠点段() {
         let t = tb("/tmp/ws");
@@ -116,6 +120,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn guard_接受工作区内绝对路径_工作区自身合法() {
         let t = tb("/tmp/ws");
@@ -156,6 +161,7 @@ mod tests {
         assert!(!resolve_links(&t.path().join("out/secret.txt")).starts_with(t.path()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn rel_display_返回工作区相对路径() {
         let t = tb("/tmp/ws");

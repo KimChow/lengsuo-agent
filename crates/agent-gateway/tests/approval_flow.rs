@@ -1,6 +1,10 @@
 //! 审批应答契约（approval:respond）：现有测试完全未覆盖此动作。
 //! 契约：先归属校验（403）→ 必须在pending集合内（否则403，不泄露404差别）→
 //! approved/decision两种写法映射 → 一次性应答 → 过期应答落为timedOut deny。
+//!
+//! 仅在 Unix 运行：网关起服需写入私有握手文件（ACL 保护），而该 ACL 在
+//! Windows 尚未实现，`write_handshake` 按 fail-closed 返回 `Unsupported`。
+#![cfg(unix)]
 
 use agent_core::{
     permission::PermissionGate,

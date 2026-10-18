@@ -1,13 +1,16 @@
 //! `file:write / writeBatch / remove / rename`：原子落盘、防呆、组回滚、回收站、跨盘退化。
 
 use std::fs;
+#[cfg(unix)]
 use std::path::Path;
 
 use agent_tools::{FsToolbox, ToolError, WriteOp};
 
 mod support;
 
-use support::{trashed_named, Sandbox};
+#[cfg(unix)]
+use support::trashed_named;
+use support::Sandbox;
 
 #[test]
 fn write_新建与覆盖成功_不留临时文件() {
@@ -36,6 +39,7 @@ fn write_新建与覆盖成功_不留临时文件() {
 }
 
 #[test]
+#[cfg(unix)]
 fn write_覆盖时保留原文件权限位() {
     let sb = Sandbox::new();
     let tb = FsToolbox::new(&sb.workspace);
@@ -201,6 +205,9 @@ fn write_batch_组内重复写同一路径_回滚回到批量前内容() {
     assert_eq!(sb.get("loop.txt"), "ORIGINAL");
 }
 
+// 回收站两条用例依赖 freedesktop 布局（XDG_DATA_HOME + files/ + info/*.trashinfo，
+// 见 support/mod.rs），Windows 的 trash 实现不使用该布局 ⇒ 仅 Unix 运行。
+#[cfg(unix)]
 #[test]
 fn remove_落回收站而非直删() {
     let sb = Sandbox::new();
@@ -220,6 +227,7 @@ fn remove_落回收站而非直删() {
     assert!(support::trash_entry_count() > before, "回收站条目数应增加");
 }
 
+#[cfg(unix)]
 #[test]
 fn remove_目录同样进回收站_缺失与越界分别报错() {
     let sb = Sandbox::new();
@@ -289,6 +297,7 @@ fn rename_同盘成功且不覆盖目标() {
 /// rename 到其中即触发 EXDEV，验证退化为「复制 + 删除源」。
 /// 若 /dev/shm 与工作区同盘（无 EXDEV），断言退化为普通 rename 仍然成立。
 #[test]
+#[cfg(unix)]
 fn rename_跨盘退化为复制加删除() {
     let sb = Sandbox::new();
     let tb = FsToolbox::new(&sb.workspace);

@@ -247,6 +247,9 @@ async fn events_handshake_is_rejected_when_token_mismatches() {
     mock.shutdown().await;
 }
 
+// Windows 上「连接被拒」经 winsock 归为 Timeout 而非 Transport（错误分类差异），
+// 故本用例仅在 Unix 运行；其余事件流用例跨平台一致。
+#[cfg(unix)]
 #[tokio::test]
 async fn events_connection_refused_is_transport_error() {
     let mock = MockGateway::events(EventsBehaviour {

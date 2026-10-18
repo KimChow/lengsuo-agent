@@ -1,4 +1,7 @@
 //! ExecRunner 验收：echo/cwd/退出码/超时/截断/PowerShell 不支持/无注入。
+//!
+//! 仅在 Unix 运行：用例驱动真实 `bash`（`allowed_shells: vec![Shell::Bash]`）。
+#![cfg(unix)]
 
 use std::time::Duration;
 

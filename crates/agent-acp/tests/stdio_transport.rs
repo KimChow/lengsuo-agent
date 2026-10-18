@@ -6,26 +6,39 @@
 //! 覆盖：真实 spawn + 环境 scrub 下的请求-响应往返、stdout 超长行 fail-closed
 //! 下毒、子进程忽略 stdin EOF 时有界拆除、spawn 失败报错、scrub 规则纯函数。
 
+#[cfg(unix)]
 use std::io::Write as _;
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
-use agent_acp::client::{Client, ClientConfig};
+#[cfg(unix)]
+use agent_acp::client::Client;
+#[cfg(unix)]
+use agent_acp::client::ClientConfig;
+#[cfg(unix)]
 use agent_acp::error::Error;
+#[cfg(unix)]
 use agent_acp::message::RequestId;
-use agent_acp::stdio::{
-    env_pair_allowed, is_credential_env, spawn_stdio, SpawnConfig, SYSTEM_ENV_KEEP,
-};
+use agent_acp::stdio::{env_pair_allowed, is_credential_env, SYSTEM_ENV_KEEP};
+#[cfg(unix)]
+use agent_acp::stdio::{spawn_stdio, SpawnConfig};
+#[cfg(unix)]
 use agent_acp::{method, ControlSubtype};
+#[cfg(unix)]
 use serde_json::Value;
 
+#[cfg(unix)]
 const WAIT: Duration = Duration::from_secs(5);
 
 /// 测试运行期写出的假 agent 脚本；Drop 时清理。
+#[cfg(unix)]
 struct Script {
     path: PathBuf,
 }
 
+#[cfg(unix)]
 impl Script {
     fn new(name: &str, body: &str) -> Self {
         let mut path = std::env::temp_dir();
@@ -41,12 +54,14 @@ impl Script {
     }
 }
 
+#[cfg(unix)]
 impl Drop for Script {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
 }
 
+#[cfg(unix)]
 fn fast_config() -> ClientConfig {
     ClientConfig {
         max_events: 16,
@@ -56,6 +71,7 @@ fn fast_config() -> ClientConfig {
 
 /// 真实往返：脚本对每行输入回一条固定响应（id 固定 1，客户端首个数字 id 也是 1）。
 #[test]
+#[cfg(unix)]
 fn spawn_stdio_round_trip_with_real_child() {
     let script = Script::new(
         "echo",
@@ -91,6 +107,7 @@ done
 
 /// stdout 出现超过单行上限的行：解码器 fail-closed，连接被下毒而非静默截断。
 #[test]
+#[cfg(unix)]
 fn overlong_line_poisons_real_connection() {
     let script = Script::new("long", &format!("printf '%s\\n' '{}'\n", "x".repeat(4096)));
     let mut cfg = script.config();
@@ -113,6 +130,7 @@ fn overlong_line_poisons_real_connection() {
 
 /// 子进程不理会 stdin EOF 且不退出：拆除必须有界（kill 兜底），不得挂住调用方。
 #[test]
+#[cfg(unix)]
 fn teardown_is_bounded_when_child_ignores_eof() {
     let script = Script::new("stubborn", "while :; do sleep 1; done\n");
     let mut cfg = script.config();
@@ -132,6 +150,7 @@ fn teardown_is_bounded_when_child_ignores_eof() {
 
 /// spawn 失败（程序不存在）报 IO 错误，不 panic、不留残留。
 #[test]
+#[cfg(unix)]
 fn spawn_failure_is_reported_as_io_error() {
     let cfg = SpawnConfig::new("/nonexistent/acp-agent-xyz");
     let err = spawn_stdio(&cfg).expect_err("不存在的程序必须报错");
@@ -166,6 +185,7 @@ fn env_scrub_rules() {
 
 /// 白名单模式仍能跑通真实子进程（PATH 在保留集内，脚本不依赖外部命令）。
 #[test]
+#[cfg(unix)]
 fn allowlist_only_env_still_spawns_and_round_trips() {
     let script = Script::new(
         "allowlist",
@@ -184,6 +204,7 @@ fn allowlist_only_env_still_spawns_and_round_trips() {
 
 /// 真实连接上的 control 面：客户端发出的 control_request 信封被子进程按行读走。
 #[test]
+#[cfg(unix)]
 fn control_request_frame_reaches_real_child() {
     // 脚本把收到的每行原样回显；客户端把它读回来当作入站帧（信封可被重新归类）。
     let script = Script::new(

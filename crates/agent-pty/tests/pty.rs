@@ -3,6 +3,9 @@
 //! 规格要求的用例：`bash -c echo` 输出断言、交互式写入回显、resize 不 panic、
 //! kill 后 alive=false、replay 含历史、两会话独立、写已死会话 NotFound/AlreadyDead。
 //! 所有异步等待都带超时（AGENTS.md §4）。
+//!
+//! 仅在 Unix 运行：用例依赖真实伪终端与 `bash`，Windows 无对应 shell 与 pty 后端。
+#![cfg(unix)]
 
 use std::time::Duration;
 

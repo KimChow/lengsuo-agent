@@ -98,6 +98,10 @@ fn disabled_session_has_no_digest() {
     assert!(s.memory_digest.is_none(), "disabled ⇒ None");
 }
 
+/// 平台差异：workspace_root 指向文件时，Unix 走 ENOTDIR ⇒ compose 失败；
+/// Windows 该路径返回 NotFound，被 `read_layer` 视为「层不存在」⇒ compose 成功。
+/// 故本用例仅在具备 ENOTDIR 语义的 Unix 上执行（CI 为 Linux）。
+#[cfg(unix)]
 #[test]
 fn compose_failure_does_not_block_session() {
     let rt = rt("fail", true);

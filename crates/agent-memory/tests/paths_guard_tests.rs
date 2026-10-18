@@ -6,7 +6,9 @@
 //! 合法摆放不被误拦（daily.rs 已记录的局限：根的真实路径即为授权根）。
 
 use std::fs;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use agent_memory::{Identity, MemoryEngine, MemoryError, MemoryPaths, CAP_SOUL};
@@ -39,11 +41,13 @@ impl TempDir {
         MemoryEngine::new(self.paths(), enabled)
     }
 
+    #[cfg(unix)]
     fn outside(&self) -> PathBuf {
         self.path.join("outside")
     }
 
     /// `dir` 内实体名（排序后），用于断言「外部目录未被写入任何东西」。
+    #[cfg(unix)]
     fn entries(dir: &Path) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(dir)
             .map(|rd| {
@@ -63,6 +67,7 @@ impl Drop for TempDir {
     }
 }
 
+#[cfg(unix)]
 fn assert_escape(res: Result<(), MemoryError>, scene: &str) {
     assert!(
         matches!(res, Err(MemoryError::PathEscape)),

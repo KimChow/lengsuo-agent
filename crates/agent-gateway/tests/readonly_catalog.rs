@@ -3,6 +3,9 @@
 //! 行为来源：PC05 §2（readonly 只允许只读类工具）、PC06 §3（工具管控）。
 //! 约定：readonly 会话隐藏非 `ToolKind::Read` 工具；full 会话保留白名单；
 //! 无会话请求沿用 `default_mode` 白名单（现有兼容行为）；他人会话 403。
+//! 仅在 Unix 运行：网关起服需写私有握手文件（ACL 保护），Windows 上该 ACL 未实现，
+//! `write_handshake` 按 fail-closed 返回 `Unsupported`。
+#![cfg(unix)]
 
 use agent_core::{
     permission::PermissionGate,

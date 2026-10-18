@@ -1,6 +1,9 @@
 //! 错误映射契约：CoreError → 信封 code 的翻译表，以及请求体校验的 400 路径。
 //! 覆盖缺口：SessionNotFound→404、SessionClosed→409、InvalidConfig→400、
 //! 非法/缺失 id 参数→400、config:set 非法值与未知 key→400、config:get 缺 key→400。
+//! 仅在 Unix 运行：网关起服需写私有握手文件（ACL 保护），Windows 上该 ACL 未实现，
+//! `write_handshake` 按 fail-closed 返回 `Unsupported`。
+#![cfg(unix)]
 
 use agent_core::{
     provider::EchoProvider,

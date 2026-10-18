@@ -1,3 +1,6 @@
+//! 仅在 Unix 运行：网关起服需写私有握手文件（ACL 保护），Windows 上该 ACL 未实现，
+//! `write_handshake` 按 fail-closed 返回 `Unsupported`。
+#![cfg(unix)]
 use agent_core::{provider::EchoProvider, runtime::Runtime, schema::Isolation};
 use agent_gateway::{GatewayConfig, GatewayHandle};
 use serde_json::{json, Value};
