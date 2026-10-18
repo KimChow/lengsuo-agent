@@ -16,11 +16,14 @@ fn config(framing: Framing) -> ClientConfig {
         framing,
     );
     cfg.request_timeout = Duration::from_millis(500);
-    cfg.handshake_timeout = Duration::from_secs(2);
+    // 握手超时留充足余量：`cargo test --workspace` 会并行拉起大量用例，
+    // 8 个 Python 子进程同时冷启动时 2s 会压线抖动（实测 --test-threads=1 稳定，
+    // 并行偶发「连接结束，响应未送达」）。放宽只影响等待上限，不改变被测语义。
+    cfg.handshake_timeout = Duration::from_secs(30);
     cfg
 }
 async fn connect(f: Framing) -> McpClient {
-    tokio::time::timeout(Duration::from_secs(3), McpClient::connect(config(f)))
+    tokio::time::timeout(Duration::from_secs(40), McpClient::connect(config(f)))
         .await
         .unwrap()
         .unwrap()

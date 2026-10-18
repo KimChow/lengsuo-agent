@@ -25,7 +25,9 @@ fn config(pid_file: Option<&Path>) -> ClientConfig {
     }
     let mut cfg = ClientConfig::stdio(command, Framing::NewlineDelimited);
     cfg.request_timeout = Duration::from_millis(800);
-    cfg.handshake_timeout = Duration::from_secs(3);
+    // 与 stdio_acceptance 同理：`--workspace` 并行时 Python 子进程冷启动会压线，
+    // 放宽握手/连接等待上限（不改变被测语义）。
+    cfg.handshake_timeout = Duration::from_secs(30);
     cfg
 }
 
@@ -72,7 +74,7 @@ impl Drop for PidFile {
 
 async fn connect(gate: TrustGate) -> TrustedClient {
     tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(40),
         TrustedClient::connect(config(None), gate),
     )
     .await
@@ -93,7 +95,7 @@ async fn connect_denies_untrusted_gate_without_spawning() {
     // 合法夹具命令 + pid 钩子：一旦被 spawn，pid 文件必然出现。
     let pid = PidFile::new("untrusted");
     let error = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(40),
         TrustedClient::connect(config(Some(&pid.0)), gate.clone()),
     )
     .await
@@ -236,7 +238,7 @@ async fn revoking_server_and_trust_denies_calls_immediately() {
 async fn shutdown_reaps_fixture_process_and_closes_facade() {
     let pid = PidFile::new("shutdown");
     let mut client = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(40),
         TrustedClient::connect(config(Some(&pid.0)), ready_gate()),
     )
     .await
