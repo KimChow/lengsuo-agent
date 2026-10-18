@@ -83,22 +83,35 @@ impl Sink {
 
 /// 读到 EOF，最多保留 `cap` 字节；超出部分继续读但丢弃，
 /// 以免写端因我们停止读取而收到 `SIGPIPE`、改变退出码。
-async fn read_into<R>(src: &mut R, sink: &mut Vec<u8>, cap: usize) -> std::io::Result<bool>
+///
+/// 截断标记**直接写入 `sink.capped`，不经过返回值**：本 future 会在
+/// `read().await` 处被 [`tokio::select!`] 取消（`child.wait()` 赢得竞争时
+/// 分支 future 被丢弃），任何只存在于局部变量、等返回才回写的状态都会
+/// 随之消失；下一轮重建本 future 时从初值起步，就会把「上次已截断」
+/// 覆盖成「本次未截断」，导致输出残缺却上报 `truncated = false`。
+/// 故所有状态必须在**两次 await 之间**即时落回 `sink`（该区间不可被取消）。
+async fn read_into<R>(src: &mut R, sink: &mut Sink, cap: usize)
 where
     R: AsyncRead + Unpin,
 {
-    let mut capped = false;
     let mut chunk = [0u8; CHUNK];
     loop {
-        let n = src.read(&mut chunk).await?;
+        let n = match src.read(&mut chunk).await {
+            Ok(n) => n,
+            Err(e) => {
+                sink.fail(e.to_string());
+                return;
+            }
+        };
         if n == 0 {
-            return Ok(capped);
+            sink.open = false;
+            return;
         }
-        let keep = cap.saturating_sub(sink.len()).min(n);
+        let keep = cap.saturating_sub(sink.bytes.len()).min(n);
         if keep < n {
-            capped = true;
+            sink.capped = true;
         }
-        sink.extend_from_slice(&chunk[..keep]);
+        sink.bytes.extend_from_slice(&chunk[..keep]);
     }
 }
 
@@ -107,13 +120,7 @@ async fn pump<R>(src: &mut R, sink: &mut Sink, cap: usize)
 where
     R: AsyncRead + Unpin,
 {
-    match read_into(src, &mut sink.bytes, cap).await {
-        Ok(capped) => {
-            sink.open = false;
-            sink.capped = capped;
-        }
-        Err(e) => sink.fail(e.to_string()),
-    }
+    read_into(src, sink, cap).await;
 }
 
 /// 并发收两条流并等退出码。

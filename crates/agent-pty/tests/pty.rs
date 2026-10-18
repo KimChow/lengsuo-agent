@@ -14,6 +14,36 @@ use agent_pty::{PtyConfig, PtyError, PtyManager};
 /// 测试用等待上限；真 PTY 在研究机上远快于此值。
 const WAIT: Duration = Duration::from_secs(20);
 
+/// PTY 用例串行闸：`cargo test --workspace` 会并行启动多个测试二进制，
+/// 同时创建大量伪终端时争抢 pty/tty 资源，交互式写读偶发拿不到回显
+/// （实测单独跑 15/15 通过，全量并行偶发 1/5 失败）。
+///
+/// 用原子标志做非阻塞独占：**不持锁跨 `await`**（`MutexGuard` 跨 await 会被
+/// clippy 判为 `await_holding_lock`），且不新增依赖。`Drop` 时释放。
+static PTY_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct PtyGate;
+
+impl PtyGate {
+    fn acquire() -> Self {
+        use std::sync::atomic::Ordering;
+        // 临界区最长是一次交互用例（秒级），自旋 + 让出线程足够。
+        while PTY_BUSY
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            std::thread::yield_now();
+        }
+        PtyGate
+    }
+}
+
+impl Drop for PtyGate {
+    fn drop(&mut self) {
+        PTY_BUSY.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 fn cfg(line: &str) -> PtyConfig {
     PtyConfig {
         shell: format!("bash --norc --noprofile -c {line:?}"),
@@ -70,6 +100,7 @@ async fn pump_until(rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>, needle: &[u8]
 
 #[tokio::test]
 async fn echo_output_then_stream_closes() {
+    let _gate = PtyGate::acquire();
     let mut mgr = PtyManager::new();
     let id = mgr.create(cfg("echo w1-pty-hello")).await.unwrap();
     let mut rx = mgr.take_output(id).await.expect("输出流可取回");
@@ -85,6 +116,7 @@ async fn echo_output_then_stream_closes() {
 
 #[tokio::test]
 async fn take_output_unknown_session_is_none() {
+    let _gate = PtyGate::acquire();
     let mut mgr = PtyManager::new();
     assert!(mgr.take_output(9999).await.is_none());
 }
@@ -93,6 +125,7 @@ async fn take_output_unknown_session_is_none() {
 
 #[tokio::test]
 async fn interactive_write_executed_by_shell() {
+    let _gate = PtyGate::acquire();
     let mut mgr = PtyManager::new();
     // 交互 bash（stdin 是 tty）；先关掉 tty 回显，之后写入的字符串不会被原样回显。
     let cfgp = PtyConfig {
@@ -122,6 +155,7 @@ async fn interactive_write_executed_by_shell() {
 
 #[tokio::test]
 async fn resize_many_calls_do_not_panic() {
+    let _gate = PtyGate::acquire();
     let mut mgr = PtyManager::new();
     let id = mgr.create(cfg("sleep 30")).await.unwrap();
     for (cols, rows) in [(10u16, 5u16), (200, 50), (1, 1), (80, 24)] {
@@ -141,6 +175,7 @@ async fn resize_many_calls_do_not_panic() {
 
 #[tokio::test]
 async fn kill_marks_session_not_alive() {
+    let _gate = PtyGate::acquire();
     let mut mgr = PtyManager::new();
     let id = mgr.create(cfg("sleep 60")).await.unwrap();
     let before = mgr.list();
@@ -172,6 +207,7 @@ async fn kill_marks_session_not_alive() {
 
 #[tokio::test]
 async fn replay_contains_history() {
+    let _gate = PtyGate::acquire();
     let mut mgr = PtyManager::new();
     let id = mgr.create(cfg("echo REPLAY-ME-42")).await.unwrap();
     let mut rx = mgr.take_output(id).await.expect("输出流可取回");
@@ -190,6 +226,7 @@ async fn replay_contains_history() {
 
 #[tokio::test]
 async fn two_sessions_are_isolated() {
+    let _gate = PtyGate::acquire();
     let mut mgr = PtyManager::new();
     let a = mgr.create(cfg("echo AAA-ONLY")).await.unwrap();
     let b = mgr.create(cfg("echo BBB-ONLY")).await.unwrap();
@@ -221,6 +258,7 @@ async fn two_sessions_are_isolated() {
 
 #[tokio::test]
 async fn write_dead_session_errors() {
+    let _gate = PtyGate::acquire();
     let mut mgr = PtyManager::new();
     assert!(matches!(
         tokio::time::timeout(WAIT, mgr.write(5150, b"ls\r"))
@@ -266,6 +304,7 @@ async fn default_config_resolves_shell() {
     assert!(d.cwd.is_none());
     assert!(d.env.is_empty());
 
+    let _gate = PtyGate::acquire();
     let mut mgr = PtyManager::new();
     let mut c = cfg("sh -c 'echo $W1_PROBE_VAR:$(pwd)'");
     c.env.insert("W1_PROBE_VAR".into(), "probe-9".into());
@@ -287,6 +326,7 @@ async fn default_config_resolves_shell() {
 
 #[tokio::test]
 async fn missing_cwd_fails_closed() {
+    let _gate = PtyGate::acquire();
     let mut mgr = PtyManager::new();
     let mut c = cfg("pwd");
     c.cwd = Some(std::path::PathBuf::from("/definitely/not/a/dir/w1-pty"));
@@ -300,6 +340,7 @@ async fn missing_cwd_fails_closed() {
 
 #[tokio::test]
 async fn empty_shell_config_is_rejected() {
+    let _gate = PtyGate::acquire();
     let mut mgr = PtyManager::new();
     let res = tokio::time::timeout(
         WAIT,

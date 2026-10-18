@@ -4,8 +4,14 @@
 use std::fs;
 
 use agent_skills::{InvocationSource, SkillCatalog};
+// 以下三个符号只被 `#[cfg(unix)]` 的软链用例使用，故导入同样按平台门控，
+// 避免在无软链语义的平台上产生未用导入。
+#[cfg(unix)]
+use tempfile::TempDir;
 
 use crate::{catalog_for, host_tools, names_of, two_roots};
+#[cfg(unix)]
+use crate::{make_skill, plain};
 
 #[cfg(unix)]
 #[test]
