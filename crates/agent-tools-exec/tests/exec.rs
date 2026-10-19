@@ -202,3 +202,129 @@ async fn default_config_matches_the_frozen_spec() {
     assert_eq!(cfg.max_output_bytes, 30_000);
     assert_eq!(cfg.allowed_shells, vec![Shell::Bash]);
 }
+
+// ---------------------------------------------------------------------------
+// 环境清洗：派生命令前剔除不可继承的宿主上下文键。
+//
+// 隔离手段：不在测试进程里改宿主全局环境（并行用例会互相污染），而是重新拉起
+// 本测试二进制的一个子进程，用 `Command::env` 只给那个子进程注入四键的大小写
+// 变种与一个普通变量；子进程再真实跑 `bash`，从 bash 自己的环境里核对结果。
+// ---------------------------------------------------------------------------
+
+/// 子进程模式开关：只有被本用例重新拉起的测试进程才带此变量。
+const ENV_SCRUB_CHILD_MODE: &str = "AGENT_TOOLS_EXEC_ENV_SCRUB_CHILD_MODE";
+
+/// 本用例名：重新拉起子进程时用 `--exact` 只跑它。
+const ENV_SCRUB_TEST_NAME: &str = "scrubbed_environment_reaches_real_bash_child";
+
+/// 注入隔离子进程的键值：四键的多种大小写写法 + 一个必须保留的普通变量。
+const INJECTED_CHILD_ENV: &[(&str, &str)] = &[
+    ("CONVERSATION_MESSAGE_ID", "conversation"),
+    ("Conversation_Message_Id", "conversation-mixed"),
+    ("conversation_message_id", "conversation-lower"),
+    ("ROOT_REQUEST_ID", "root"),
+    ("Root_Request_Id", "root-mixed"),
+    ("TOOL_CALL_ID", "tool"),
+    ("Tool_Call_Id", "tool-mixed"),
+    ("TRACE_ID", "trace"),
+    ("Trace_Id", "trace-mixed"),
+    ("AGENT_TOOLS_EXEC_ENV_CANARY", "canary"),
+];
+
+/// 子进程侧探针：只打印「有没有」与键名，绝不打印任何环境值。
+const ENV_SCRUB_PROBE: &str = r#"
+printf 'leak_count=%s\n' "$(env | sed 's/=.*//' | grep -icxE 'conversation_message_id|root_request_id|tool_call_id|trace_id')"
+printf 'canary=%s\n' "${AGENT_TOOLS_EXEC_ENV_CANARY:+present}"
+printf 'path=%s\n' "${PATH:+present}"
+printf 'home=%s\n' "${HOME:+present}"
+printf 'leaked=%s\n' "$(env | sed 's/=.*//' | grep -ixE 'conversation_message_id|root_request_id|tool_call_id|trace_id' | tr 'A-Z' 'a-z' | sort -u | tr '\n' ',')"
+"#;
+
+/// 取探针输出里 `key=value` 的值。
+fn probe_field<'a>(stdout: &'a str, key: &str) -> Option<&'a str> {
+    stdout.lines().find_map(|line| {
+        line.strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix('='))
+    })
+}
+
+/// 阻塞等待子进程退出，超时即杀掉并失败（测试不许无限挂住）。
+fn wait_bounded(mut child: std::process::Child, label: &str) -> std::process::Output {
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait().expect("轮询子进程退出状态") {
+            Some(_) => return child.wait_with_output().expect("读取子进程输出"),
+            None if started.elapsed() > Duration::from_secs(60) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{label} 超时未退出");
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
+/// 子进程模式：断言真实 `bash` 子进程的环境已被清洗，且必需变量仍在。
+async fn assert_real_bash_child_environment_is_scrubbed() {
+    let r = with_deadline(runner(4096).run(
+        Shell::Bash,
+        ENV_SCRUB_PROBE,
+        None,
+        Some(Duration::from_secs(10)),
+    ))
+    .await
+    .expect("deadline");
+    assert_eq!(r.exit_code, 0, "stderr: {:?}", r.stderr);
+    assert!(
+        !r.truncated,
+        "探针输出不该被截断: {:?}",
+        r.stdout.chars().take(80).collect::<String>()
+    );
+    assert_eq!(
+        probe_field(&r.stdout, "leak_count"),
+        Some("0"),
+        "bash 子进程仍能读到不可继承键: leaked=[{}]",
+        probe_field(&r.stdout, "leaked").unwrap_or("<无>")
+    );
+    assert_eq!(
+        probe_field(&r.stdout, "leaked"),
+        Some(""),
+        "bash 子进程环境里仍有不可继承键（仅列键名）"
+    );
+    // 必需 shell 环境与普通变量必须照常可用。
+    assert_eq!(probe_field(&r.stdout, "path"), Some("present"), "PATH 丢失");
+    assert_eq!(probe_field(&r.stdout, "home"), Some("present"), "HOME 丢失");
+    assert_eq!(
+        probe_field(&r.stdout, "canary"),
+        Some("present"),
+        "普通变量被误删"
+    );
+}
+
+#[tokio::test]
+async fn scrubbed_environment_reaches_real_bash_child() {
+    if std::env::var_os(ENV_SCRUB_CHILD_MODE).is_some() {
+        assert_real_bash_child_environment_is_scrubbed().await;
+        return;
+    }
+
+    let exe = std::env::current_exe().expect("定位测试二进制");
+    let mut command = std::process::Command::new(exe);
+    command
+        .args([ENV_SCRUB_TEST_NAME, "--exact", "--nocapture"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env(ENV_SCRUB_CHILD_MODE, "1");
+    for (key, value) in INJECTED_CHILD_ENV {
+        command.env(key, value);
+    }
+    let child = command.spawn().expect("拉起隔离子测试进程");
+    let output = wait_bounded(child, "隔离子测试进程");
+    assert!(
+        output.status.success(),
+        "隔离子进程失败\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}

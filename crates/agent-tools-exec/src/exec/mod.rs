@@ -4,6 +4,7 @@
 //! 因此不存在宿主侧注入面；命令自身的 shell 语义由调用方（模型）负责，
 //! 权限判定不在本层（归 `agent-core` 权限门）。
 
+mod env;
 mod process;
 
 use std::path::Path;
@@ -94,6 +95,8 @@ impl ExecRunner {
     ///
     /// * `timeout` 为空则用 [`ExecConfig::default_timeout`]；
     /// * `cwd` 为空则继承当前进程工作目录；
+    /// * 派生前**重建**子进程环境：继承宿主环境但剔除不可继承的上下文键
+    ///   （见 [`env`]），`PATH`/`HOME` 等照常可用；
     /// * 超时 ⇒ 杀整个进程组（子进程在独立进程组中启动），保留已有输出，
     ///   `timed_out = true`；
     /// * 输出按 [`ExecConfig::max_output_bytes`] 截断，`truncated = true`。
@@ -106,12 +109,15 @@ impl ExecRunner {
     ) -> Result<ExecResult, ExecError> {
         self.check_shell(shell)?;
         let timeout = timeout.unwrap_or(self.cfg.default_timeout);
+        // 环境构造在这里做一次：命令文本与 argv 不受影响，只有环境被过滤。
+        let env = env::create_child_env(std::env::vars_os());
         process::run(
             shell.program(),
             command,
             cwd,
             timeout,
             self.cfg.max_output_bytes,
+            &env,
         )
         .await
     }

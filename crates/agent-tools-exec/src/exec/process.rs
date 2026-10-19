@@ -6,6 +6,8 @@
 //! 杀进程组必须写成 `/bin/kill -KILL -- -<pgid>`：省略 `--` 时 procps 会把
 //! `-KILL -12345` 当成它自己的选项，返回 0 却不发信号（本机实测）。
 
+use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -186,6 +188,9 @@ async fn kill_group(pgid: u32) {
 
 /// 运行 `program` + [`shell_args`]，返回带超时/截断标记的结果。
 ///
+/// `env` 是调用方构造好的子进程环境（见 [`super::env`]）：这里 `env_clear` 后
+/// 整体写回，**不**再隐式继承宿主环境，避免调用方以为过滤过、实际又漏回继承。
+///
 /// 超时：到点杀进程组（`SIGKILL`，含全部后代），保留超时前已产出的输出，
 /// `timed_out = true`、`exit_code = -1`。管道在宽限内读不到 EOF 时置
 /// `truncated`，不无限等待后台后代持有的写端。
@@ -195,10 +200,13 @@ pub(crate) async fn run(
     cwd: Option<&Path>,
     timeout: Duration,
     cap: usize,
+    env: &HashMap<OsString, OsString>,
 ) -> Result<ExecResult, ExecError> {
     let started = Instant::now();
     let mut cmd = Command::new(program);
-    cmd.args(shell_args(command))
+    cmd.env_clear()
+        .envs(env)
+        .args(shell_args(command))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
