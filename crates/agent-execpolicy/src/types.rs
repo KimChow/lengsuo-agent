@@ -3,15 +3,18 @@
 use serde::{Deserialize, Serialize};
 
 /// 一条策略的判定结果（三值）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// 派生序 = 严格度序（Allow < Ask < Deny，对照参考实现 Allow < Prompt < Forbidden）：
+/// 多规则同命中聚合时取 `max()` 即最严决策，先 allow 不会掩盖 deny。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Decision {
     /// 放行。
     Allow,
-    /// 拒绝。
-    Deny,
     /// 需人审（fail-closed 倾向：拿不准就问）。
     Ask,
+    /// 拒绝。
+    Deny,
 }
 
 /// 匹配模式类型。
