@@ -90,7 +90,13 @@ pub struct Runtime {
     /// 工具执行器（W1 接线）：注入后工具步真实执行并结算结果；`None` 保持
     /// pending 占位（执行由宿主承担）。`Send + Sync` 为使用点约束（trait 本体
     /// 属 `loop` 模块，本卡不改），保证 `Runtime` 仍可跨线程共享（网关 tokio 域）。
-    executor: Option<Arc<dyn ToolExecutor + Send + Sync>>,
+    ///
+    /// 句柄热替换面（`set_tool_executor`）：执行器要绑定会话 id，而会话是在
+    /// `build()` 之后才创建的，构造期注入无法覆盖「按会话装配」；若改成绑定一次的
+    /// 独立 `Arc`，宿主还得额外持有一份会话表快照。这里改用**同一把锁下的热替换**，
+    /// 不新增第二条注入路径（装配仍只有 `RuntimeBuilder::tool_executor` 与
+    /// [`Runtime::set_tool_executor`] 两个入口，后者是前者的运行期对应物）。
+    executor: Arc<Mutex<Option<Arc<dyn ToolExecutor + Send + Sync>>>>,
 }
 
 impl Runtime {
@@ -128,6 +134,49 @@ impl Runtime {
         *guard = next.clone();
         Ok(next)
     }
+
+    /// 指定会话的 `task.*` 工具执行器句柄（W1 打通卡）。
+    ///
+    /// 无状态：会话 id 绑进执行器，Runtime 由执行语境提供（见
+    /// [`Runtime::with_task_runtime`]）。宿主自建装配时用它，或直接用
+    /// [`Runtime::install_task_tools`] 一行装上。
+    pub fn task_tools_for_session(&self, session: Uuid) -> TaskToolExecutor {
+        TaskToolExecutor::for_session(session)
+    }
+
+    /// 运行期装配任务工具：把**本会话**的 `task.*` 执行器接进去（一行）。
+    ///
+    /// 与 [`RuntimeBuilder::tool_executor`] 是同一注入面的运行期对应物：构造期
+    /// 注入（`build()` 前拿不到会话 id）与运行期注入（会话建好后）都写同一个槽位，
+    /// 没有第二套注入路径。已注入其他执行器时本次调用替换之（后写胜出）。
+    pub fn install_task_tools(&self, session: Uuid) {
+        self.set_tool_executor(Arc::new(self.task_tools_for_session(session)));
+    }
+
+    /// 热替换工具执行器（`None` 恢复 pending 占位）。见字段处的来由说明。
+    pub fn set_tool_executor(&self, executor: Arc<dyn ToolExecutor + Send + Sync>) {
+        self.set_executor_slot(Some(executor));
+    }
+
+    /// 清空执行器槽位，恢复「未注入执行器」的 pending 占位语义。
+    pub fn clear_tool_executor(&self) {
+        self.set_executor_slot(None);
+    }
+
+    /// 当前执行器（测试与宿主自检的观测面）。
+    pub fn tool_executor(&self) -> Option<Arc<dyn ToolExecutor + Send + Sync>> {
+        self.executor
+            .lock()
+            .expect("执行器锁不得毒化")
+            .as_ref()
+            .map(Arc::clone)
+    }
+
+    /// 写入执行器槽位。锁在 `Arc::clone` 量级，不跨 `step` 持有；执行器内部只锁
+    /// 任务看板/会话表，不做重入（无锁序倒置）。
+    fn set_executor_slot(&self, executor: Option<Arc<dyn ToolExecutor + Send + Sync>>) {
+        *self.executor.lock().expect("执行器锁不得毒化") = executor;
+    }
 }
 
 mod approvals;
@@ -135,10 +184,12 @@ mod bus;
 mod execute;
 mod internals;
 mod sessions;
+mod task_tools;
 mod tasks;
 mod tool_result;
 mod turns;
 
+pub use task_tools::TaskToolExecutor;
 pub use tasks::{Task, TaskStatus};
 pub use turns::StepOutcome;
 // 交付物提醒的单一来源（缺口 B3）：`loop` 层经 `crate::runtime::…` 取用关键词表、

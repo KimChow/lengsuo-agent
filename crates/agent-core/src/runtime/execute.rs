@@ -52,7 +52,10 @@ impl Runtime {
         write_executed: &mut bool,
         events: &mut Vec<Event>,
     ) -> Result<StepOutcome, CoreError> {
-        let Some(executor) = self.executor.as_ref() else {
+        // 执行器槽位锁定在「取句柄」的瞬间（`Arc::clone` 量级）：执行期间另一次
+        // `set_tool_executor` 不影响已开始的这一步（步内自洽，不出现半途换执行器）。
+        let executor = self.tool_executor();
+        let Some(executor) = executor else {
             // 未注入执行器：运行时不执行任何工具，无门检必要，保持兼容占位。
             self.push_tool_result(id, name, args.clone(), PENDING_TOOL_RESULT)?;
             return Ok(StepOutcome::ToolSettled);
@@ -76,7 +79,13 @@ impl Runtime {
                 Ok(StepOutcome::ToolSettled)
             }
             Decision::Allow => {
-                match executor.execute(name, args) {
+                // 任务工具步先入语境（见 `tasks.rs` 的 `TASK_RUNTIME`）：`task.*` 适配层
+                // 只被赋予工具名与参数（`ToolExecutor` 签名不含会话），会话语境由这里
+                // 提供。语境归属用热态指针断言，嵌套别的 Runtime 会被拒。
+                let outcome = self
+                    .with_task_runtime(|| executor.execute(name, args))
+                    .unwrap_or_else(|e| Err(e.to_string()));
+                match outcome {
                     Ok(value) => {
                         // 交付物记账：仅「真实执行成功」置位（deny / 执行失败 /
                         // pending 不算）。
