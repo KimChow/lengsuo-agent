@@ -24,10 +24,13 @@ fn frame(seq: u64, kind: &str) -> String {
     )
 }
 
-/// 常量本身必须与 `AGENT-KICKOFF.md` 第 23 行逐个对上（含 `user`），
+/// 常量必须与 `agent-core::schema::EventKind` 逐项对齐（含持久化事件 `user`），
 /// 挡住「`EVENT_KINDS` 被删项后循环少跑一圈」的静默漏测。
+///
+/// 第 23 行枚举句缺席的三类（`approval_resolved` / `error` / `user`）按实现登记，
+/// 见 `contracts_check::EVENT_KINDS` 文档注释。
 #[test]
-fn frozen_event_kind_list_matches_kickoff_line_23() {
+fn frozen_event_kind_list_matches_agent_core_event_kind() {
     let expected = [
         "user",
         "thinking",
@@ -35,11 +38,17 @@ fn frozen_event_kind_list_matches_kickoff_line_23() {
         "tool_use",
         "tool_result",
         "approval_request",
+        "approval_resolved",
         "files",
         "done",
+        "error",
         "session_update",
     ];
-    assert_eq!(EVENT_KINDS.len(), 9, "v0 事件面应为 9 个 kind");
+    assert_eq!(
+        EVENT_KINDS.len(),
+        11,
+        "v0 事件面应为 11 项（agent-core 10 变体 + 持久化 user）"
+    );
     for kind in expected {
         assert!(
             EVENT_KINDS.contains(&kind),
@@ -48,6 +57,69 @@ fn frozen_event_kind_list_matches_kickoff_line_23() {
     }
     for kind in EVENT_KINDS {
         assert!(expected.contains(kind), "常量里的 {kind} 未在协议里登记");
+    }
+}
+
+/// **契约缺口探针**：`EVENT_KINDS` 里每一个 kind 都必须能被壳侧解码。
+///
+/// 与 [`every_frozen_kind_decodes_through_shell`] 的区别：本用例**逐 kind 收集失败**
+/// 再统一断言，缺口存在时报错文本会一次列出**全部**不可解码的 kind（而不是在第一个
+/// 就 panic）。这是本卡暴露「壳侧 `EventKind` 缺 `approval_resolved` / `error`」的红点：
+/// 修壳侧前该断言应失败且列出这两类，修完后转绿。**不要把它改成恒真或 ignore**。
+#[tokio::test]
+async fn all_frozen_kinds_are_decodable_by_shell() {
+    let frames: Vec<String> = EVENT_KINDS
+        .iter()
+        .enumerate()
+        .map(|(i, kind)| frame(i as u64 + 1, kind))
+        .collect();
+    let mock = support::ws_mock(frames).await;
+    let client = GatewayClient::from_handshake(lengsuo_shell::gateway::GatewayHandshake {
+        port: mock.addr().port(),
+        pid: std::process::id(),
+        token: "loopback-mock".to_owned(),
+    })
+    .with_timeout(Duration::from_secs(5));
+    let mut sub = client.subscribe_events().await.expect("WS 握手成功");
+
+    let mut undecodable = Vec::new();
+    for kind in EVENT_KINDS {
+        match sub.next().await {
+            Ok(event) => assert_eq!(
+                event.kind,
+                serde_json::from_value::<EventKind>(json!(kind)).unwrap(),
+                "kind 往返不一致: {kind}"
+            ),
+            Err(e) => undecodable.push(format!("{kind} ({e})")),
+        }
+    }
+    assert!(
+        undecodable.is_empty(),
+        "以下冻结事件 kind 不能走壳侧解码路径（壳侧 EventKind 与 \
+         agent-core::schema::EventKind 不一致）：{undecodable:?}"
+    );
+    mock.shutdown().await;
+}
+
+/// 同上，但按「每个 kind 一帧」逐帧独立解码（不依赖前序帧的消费位置），
+/// 便于定位到具体哪一类被壳侧拒绝。
+#[tokio::test]
+async fn each_frozen_kind_decodes_in_isolation() {
+    for kind in EVENT_KINDS {
+        let mock = support::ws_mock(vec![frame(1, kind)]).await;
+        let client = GatewayClient::from_handshake(lengsuo_shell::gateway::GatewayHandshake {
+            port: mock.addr().port(),
+            pid: std::process::id(),
+            token: "loopback-mock".to_owned(),
+        })
+        .with_timeout(Duration::from_secs(5));
+        let mut sub = client.subscribe_events().await.expect("WS 握手成功");
+        let got = sub.next().await;
+        mock.shutdown().await;
+        let event = got
+            .unwrap_or_else(|e| panic!("冻结事件 kind `{kind}` 在壳侧解码失败（协议缺口）: {e}"));
+        let expected: EventKind = serde_json::from_value(json!(kind)).unwrap();
+        assert_eq!(event.kind, expected, "kind 往返不一致: {kind}");
     }
 }
 
@@ -84,13 +156,17 @@ async fn every_frozen_kind_decodes_through_shell() {
     mock.shutdown().await;
 }
 
+/// 未知 kind 必须被显式拒绝（`UnknownKind`），不得静默丢弃。
+///
+/// **注意**：`approval_resolved` / `error` **已冻结**（见 `EVENT_KINDS`），不属于此列——
+/// 它们被拒是壳侧缺口，归 [`all_frozen_kinds_are_decodable_by_shell`] 断言，
+/// 不要塞回本用例（否则会把「缺口」误写成「预期行为」）。
 #[tokio::test]
 async fn unregistered_kind_is_rejected_explicitly() {
     let cases = [
+        "definitely_not_a_kind",
         "warning",
         "task.created",
-        "approval_resolved",
-        "error",
         "unknown_kind",
     ];
     for kind in cases {
@@ -184,4 +260,62 @@ async fn real_gateway_event_stream_decodes_with_monotonic_seq() {
     );
 
     g.shutdown().await.unwrap();
+}
+
+/// **端到端**：真网关把 `approval_resolved` / `error` **推上线**，壳侧必须能解出。
+///
+/// `agent-gateway` `server.rs` 把 `event.kind` 当任意字符串写入帧（不做白名单），
+/// 所以这两类冻结 kind 会原样到达线格式；本用例在真网关上向总线推一帧
+/// `approval_resolved`、一帧 `error`，用壳侧真实订阅路径（`subscribe_events()`，
+/// 含真实 WS 握手 + `X-Gateway-Token`）逐帧解，断言解出的 `kind` 就是推的那类。
+///
+/// 「网关原样透传」的判据：壳侧从**线帧**解出的 typed `kind` 与推入总线的
+/// `agent-core::schema::Event.kind` 字符串一致——中间只经过网关的
+/// `json!({"seq":..,"kind":event.kind,..})` 序列化，没有重命名/白名单/改写。
+///
+/// 期待（本卡交付时）：壳侧 `EventKind` 尚缺这两类 → 帧被 `UnknownKind` 拒，
+/// 即本用例当前失败，**缺口真实存在**。修壳侧后转绿。
+#[tokio::test]
+async fn real_gateway_forwards_approval_resolved_and_error_to_shell() {
+    use agent_core::schema::{Event, Isolation};
+
+    for kind in ["approval_resolved", "error"] {
+        let (g, rt, dir) = support::start_gateway_with_runtime().await;
+        let client = GatewayClient::connect(&dir.path().join("gateway.json"))
+            .await
+            .expect("读握手文件")
+            .with_timeout(Duration::from_secs(5));
+        let created = client
+            .session_create(json!({"title": "passthrough"}))
+            .await
+            .expect("session:create");
+        let id = created["id"].as_str().unwrap().to_owned();
+
+        let mut sub = client.subscribe_events().await.expect("订阅 /events");
+        // 等服务端订阅登记完成，避免推的事件早于订阅建立而丢失。
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // 按网关订阅的隔离键推总线（`GatewayConfig::new(.., Isolation::local_default())`，
+        // 见 tests/support/mod.rs 的 start_gateway）。
+        rt.bus(&Isolation::local_default().key()).publish(Event {
+            seq: 1,
+            session_id: id.parse().unwrap(),
+            kind: kind.to_owned(),
+            payload: json!({"probe": true}),
+            ts_ms: 1_700_000_000_000,
+        });
+
+        let event = tokio::time::timeout(Duration::from_secs(3), sub.next())
+            .await
+            .expect("有限等待事件帧")
+            .unwrap_or_else(|e| {
+                panic!("真网关把已冻结 kind `{kind}` 推上线，但壳侧拒绝解码（协议缺口）: {e}")
+            });
+        assert_eq!(
+            event.kind,
+            serde_json::from_value::<EventKind>(json!(kind)).unwrap(),
+            "网关透传的 kind 与壳侧解出的不一致: {kind}"
+        );
+        g.shutdown().await.unwrap();
+    }
 }
