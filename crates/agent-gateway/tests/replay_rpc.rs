@@ -143,8 +143,9 @@ async fn replay_limit_is_clamped_by_core_page_cap() {
             Isolation::local_default(),
         ))
         .unwrap();
-    // 建会话落 1 条 session_update，echo provider 每次发送落 3 条（thinking/text/done）：
-    // 1 + 200×3 = 601 条，超过 core 页上限。
+    // 建会话落 1 条 session_update；每次 send_text 落 4 条
+    // （user 输入事件 + echo provider 的 thinking/text/done）：
+    // 1 + 200×4 = 801 条，超过 core 页上限。
     for i in 0..200 {
         rt.send_text(session.id, &format!("m{i}")).unwrap();
     }
@@ -154,7 +155,7 @@ async fn replay_limit_is_clamped_by_core_page_cap() {
     assert_eq!(v["code"], 0);
     let page = v["data"]["events"].as_array().unwrap();
     assert!(page.len() <= 500, "超过 core 页上限时必须被钳制");
-    assert_eq!(page.len(), 500, "601 条事件存在，钳制必须实际生效");
+    assert_eq!(page.len(), 500, "801 条事件存在，钳制必须实际生效");
     assert_eq!(v["data"]["lastSeq"], 500);
 
     // 从上一页尾锚点继续拉，能拿到剩余全部事件。
@@ -164,8 +165,8 @@ async fn replay_limit_is_clamped_by_core_page_cap() {
     )
     .await;
     assert_eq!(rest["code"], 0);
-    assert_eq!(rest["data"]["events"].as_array().unwrap().len(), 101);
-    assert_eq!(rest["data"]["lastSeq"], 601);
+    assert_eq!(rest["data"]["events"].as_array().unwrap().len(), 301);
+    assert_eq!(rest["data"]["lastSeq"], 801);
     g.shutdown().await.unwrap();
 }
 
