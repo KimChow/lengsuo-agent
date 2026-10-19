@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/agent-acp",
     "crates/agent-core",
+    "crates/contracts-check",
     "crates/agent-execpolicy",
     "crates/agent-gateway",
     "crates/agent-mcp",
