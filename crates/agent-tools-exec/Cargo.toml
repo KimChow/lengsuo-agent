@@ -7,6 +7,8 @@ authors.workspace = true
 description = "执行与网络工具：Bash 子进程（超时、进程组、字节截断）与 WebFetch（受限抓取 + 极简 HTML→文本）"
 
 [dependencies]
+agent-sandbox = { path = "../agent-sandbox" }
+agent-execpolicy = { path = "../agent-execpolicy" }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["process"] }
