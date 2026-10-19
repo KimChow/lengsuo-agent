@@ -21,7 +21,10 @@
 //!
 //! P2 传输与会话路由（同步线程模型，std::thread + std::sync::mpsc，不引异步运行时）：
 //! - [`transport`]：帧汇/帧源抽象与 [`transport::mock_transport`]（内存注入）；
-//! - [`stdio`]：真实子进程 stdio（spawn 前环境 scrub、reader/writer 线程、有界拆除）；
+//! - [`stdio`]：真实 stdio 传输（两个方向相反、共用同一套线程/拆除设施的形态：
+//!   客户端侧 `spawn_stdio` 与 host 侧 `host_stdio_transport`）。门面在此，实现分居
+//!   `stdio_client`（客户端侧 + 共用设施）、`stdio_host`（host 侧）、
+//!   `stdio_env`（spawn 前环境 scrub 规则）三个内部模块；
 //! - [`router`]：入站帧分派语义（pending 完成 / handler 应答 / 有界事件队列）；
 //! - [`client`]：[`client::Client`]——请求-响应路由、control 双面与事件 API
 //!   （本端作为**被 spawn 的 agent 的对面**，主动发请求）；
@@ -47,6 +50,9 @@ pub mod methods;
 pub mod replay;
 pub mod router;
 pub mod stdio;
+mod stdio_client;
+mod stdio_env;
+mod stdio_host;
 pub mod tasks;
 pub mod transport;
 
