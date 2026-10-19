@@ -1,8 +1,6 @@
 //! `session:replay` 协议面：正常回放、增量锚点、limit 钳制、隔离与入参校验。
-//!
-//! 仅在 Unix 运行：网关起服需写私有握手文件（ACL 保护），Windows 上该 ACL 未实现，
-//! `write_handshake` 按 fail-closed 返回 `Unsupported`。
-#![cfg(unix)]
+//! 全平台运行：网关起服需写私有握手文件，Unix 侧 0600 权限位、
+//! Windows 侧 DACL 真实现（仅当前用户，fail-closed）。
 use agent_core::{provider::EchoProvider, runtime::Runtime, schema::Isolation};
 use agent_gateway::{GatewayConfig, GatewayHandle};
 use serde_json::{json, Value};
