@@ -9,12 +9,17 @@ use crate::schema::{Event, Message, Role, Session, SessionStatus, ToolInfo};
 use super::{now_ms, Runtime};
 
 impl Runtime {
+    /// 落一条消息进会话历史。**消息时间由调用方取一次时钟读数并显式传入**，与随后
+    /// 事件 payload 的 `"tsMs"` 用**同一次**读数（`turn_ts()` 的来由见
+    /// [`Runtime::turn_ts`]）：消息自身的 `ts_ms` 因此随事件落盘，重启重建能取回真值，
+    /// 而不是拿「事件落盘时刻」冒充「消息产生时刻」。
     pub(super) fn push_message(
         &self,
         id: Uuid,
         role: Role,
         content: String,
         tool: Option<ToolInfo>,
+        ts_ms: u64,
     ) -> Result<Session, CoreError> {
         let mut guard = self.sessions.lock().expect("会话表锁不得毒化");
         let Some(hot) = guard.get_mut(&id) else {
@@ -30,7 +35,7 @@ impl Runtime {
             role,
             content,
             tool,
-            ts_ms: now_ms(),
+            ts_ms,
         });
         hot.session.updated_at_ms = now_ms();
         Ok(hot.session.clone())

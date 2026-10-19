@@ -99,11 +99,14 @@ impl Runtime {
         // 脱敏只做一次：`emit` 内部还会再过一次 `redact_json`，若此处先脱敏，
         // 事件 text 与历史消息 content 才逐字同一（否则敏感片段被改两次）。
         let redacted = self.redact(text);
-        let session = self.push_message(id, Role::User, redacted.clone(), None)?;
+        // 一次时钟读数同时用于消息与事件 payload：消息时间因此随事件落盘
+        // （`replay_message` 优先取 `payload.tsMs`），重启前后逐条相等。
+        let ts = self.turn_ts();
+        let session = self.push_message(id, Role::User, redacted.clone(), None, ts)?;
         // 用户输入本身也是一条 durable 事件（金标 `session-event` 的 user 消息投影：
         // `InboxDelivered` 是会话事件面上的首条，投影出 user 消息）。顺序：消息先落、
         // 事件随后，且事件必须是回合事件面的第一条，否则 receipt ≡ 持久日志会破。
-        let event = self.emit(&session, "user", json!({ "text": redacted }))?;
+        let event = self.emit(&session, "user", json!({ "text": redacted, "tsMs": ts }))?;
         self.run_turn(id, text, &history, event)
     }
 
@@ -187,12 +190,13 @@ impl Runtime {
                         // 提醒文案是常量，但同样只脱敏一次（与 `send_text` 同口径）：
                         // 提醒消息先落，随后落提醒回合的 `user` 事件，顺序与消息一致。
                         let reminder_text = self.redact(DELIVERABLE_REMINDER_NOTE);
+                        let ts = self.turn_ts();
                         let session =
-                            self.push_message(id, Role::User, reminder_text.clone(), None)?;
+                            self.push_message(id, Role::User, reminder_text.clone(), None, ts)?;
                         events.push(self.emit(
                             &session,
                             "user",
-                            json!({ "text": reminder_text }),
+                            json!({ "text": reminder_text, "tsMs": ts }),
                         )?);
                         pre_turn = Some(self.get_session(id)?.messages);
                         turn_input = DELIVERABLE_REMINDER_NOTE.to_string();
@@ -323,12 +327,20 @@ impl Runtime {
 
         // 工具步：调用先持久化并广播（模型确实发出了请求），再按门检执行结算，
         // 下一步重读历史。
-        self.record_tool_call(id, &name, &args)?;
+        let ts = self.turn_ts();
+        let (session, args_ref) = self.push_tool_call(id, &name, &args, ts)?;
         let args = self.redactor.redact_json(&args);
+        // payload 自带消息时间（`tsMs`，与历史消息同一次读数）与 blob 引用
+        // （`argsRef`，可为 null）：事件因此自足——重启重建无需回读运行期内存。
         events.push(self.emit(
             &session,
             "tool_use",
-            json!({ "name": name.clone(), "args": args.clone() }),
+            json!({
+                "name": name.clone(),
+                "args": args.clone(),
+                "argsRef": args_ref,
+                "tsMs": ts,
+            }),
         )?);
         self.execute_tool(
             id,
@@ -383,7 +395,7 @@ impl Runtime {
     fn reject_disabled_tool(
         &self,
         id: Uuid,
-        session: &Session,
+        _session: &Session,
         name: &str,
         args: Value,
         events: &mut Vec<Event>,
@@ -392,12 +404,13 @@ impl Runtime {
             "type": "error",
             "message": "Tools are disabled after the maximum agent steps",
         });
-        self.push_tool_result(id, name, args, &error.to_string())?;
-        events.push(self.emit(
-            session,
-            "tool_result",
-            json!({ "name": name, "result": error, "isError": true }),
-        )?);
+        // 结算落消息，取回型载荷（含消息时间）后补事件 kind 发出：消息 `ts_ms` 与
+        // 事件 `payload.tsMs` 同一次读数，重建取回真值。
+        let (_message, mut payload) = self.push_tool_result(id, name, args, &error.to_string())?;
+        payload["result"] = error;
+        payload["isError"] = json!(true);
+        let session = self.get_session(id)?;
+        events.push(self.emit(&session, "tool_result", payload)?);
         Ok(())
     }
 
@@ -421,8 +434,15 @@ impl Runtime {
                 }
                 ProviderStep::Text(reply) => {
                     let reply = self.redact(&reply);
-                    events.push(self.emit(session, "text", json!({ "text": reply }))?);
-                    self.push_message(id, Role::Assistant, reply, None)?;
+                    // 同一次读数：消息 `ts_ms` 与事件 `payload.tsMs` 必然相等。
+                    let ts = self.turn_ts();
+                    let session =
+                        self.push_message(id, Role::Assistant, reply.clone(), None, ts)?;
+                    events.push(self.emit(
+                        &session,
+                        "text",
+                        json!({ "text": reply, "tsMs": ts }),
+                    )?);
                 }
                 // 本步止于首个工具调用；同批尾随项不在此消费。
                 ProviderStep::ToolCall { name, args } => return Ok(Some((name, args))),
@@ -465,18 +485,21 @@ impl Runtime {
             result_ref: result_ref.clone(),
             ms: None,
         };
+        // 一次时钟读数同时用于消息与事件 payload：消息时间随事件落盘。
+        let ts = self.turn_ts();
         let message = Message {
             role: Role::ToolResult,
             content: preview.clone(),
             tool: Some(tool_info.clone()),
-            ts_ms: now_ms(),
+            ts_ms: ts,
         };
-        self.push_message(id, Role::ToolResult, preview, Some(tool_info))?;
+        self.push_message(id, Role::ToolResult, preview, Some(tool_info), ts)?;
         let payload = json!({
             "name": tool,
             "chars": raw.chars().count(),
             "resultRef": result_ref,
             "preview": message.content,
+            "tsMs": ts,
         });
         Ok((message, payload))
     }
@@ -490,6 +513,7 @@ impl Runtime {
         result: &str,
     ) -> Result<Message, CoreError> {
         let (message, payload) = self.push_tool_result(id, tool, args, result)?;
+        // 消息先落：emit 发生会话快照，取重读后的（`push_tool_result` 内已写入消息）。
         let session = self.get_session(id)?;
         self.emit(&session, "tool_result", payload)?;
         Ok(message)
@@ -502,6 +526,20 @@ impl Runtime {
         tool: &str,
         args: &Value,
     ) -> Result<Session, CoreError> {
+        Ok(self.push_tool_call(id, tool, args, self.turn_ts())?.0)
+    }
+
+    /// [`Runtime::record_tool_call`] 的实现体：**消息时间由调用方取一次时钟读数并显式
+    /// 传入**，与随后 `tool_use` 事件 payload 的 `"tsMs"` 用同一次读数（理由同
+    /// [`Runtime::turn_ts`]）。返回 `(会话快照, blob 引用)`，`args_ref` 由调用方随事件
+    /// payload 的 `"argsRef"` 一起发出，使事件自足、重建能取回同一个引用。
+    pub(super) fn push_tool_call(
+        &self,
+        id: Uuid,
+        tool: &str,
+        args: &Value,
+        ts_ms: u64,
+    ) -> Result<(Session, Option<String>), CoreError> {
         let args = self.redactor.redact_json(args);
         let args_ref = self
             .blobs
@@ -509,17 +547,19 @@ impl Runtime {
             .map(|r| r.0)
             .ok();
         let summary = self.redactor.summarize_args(&args);
-        self.push_message(
+        let session = self.push_message(
             id,
             Role::ToolCall,
             summary,
             Some(ToolInfo {
                 name: tool.to_string(),
-                args_ref,
+                args_ref: args_ref.clone(),
                 result_ref: None,
                 ms: None,
             }),
-        )
+            ts_ms,
+        )?;
+        Ok((session, args_ref))
     }
 
     /// 权限判定（工具执行前的唯一入口）。

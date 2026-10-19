@@ -218,6 +218,17 @@ pub fn log_events(dir: &std::path::Path, id: Uuid) -> Vec<Value> {
         .collect()
 }
 
+/// 会话日志里四类**可投影**事件的 `payload.tsMs`（seq 升序，`replay` 返回即升序）：
+/// 消息时间真值，生产端与消息本身用同一次时钟读数。重建的 `ts_ms` 必须逐条等于它
+/// ——这正是「取回真值而非事件落盘时刻」的证明面。其余 kind 不产出消息，不在此列。
+pub fn projected_payload_tsms(dir: &std::path::Path, id: Uuid) -> Vec<u64> {
+    log_events(dir, id)
+        .iter()
+        .filter(|e| PROJECTED_KINDS.contains(&e["kind"].as_str().expect("kind")))
+        .map(|e| e["payload"]["tsMs"].as_u64().expect("payload.tsMs"))
+        .collect()
+}
+
 /// 会话日志里四类**可投影**事件的 `ts_ms`（seq 升序，`replay` 返回即升序）；
 /// 其余 kind（`session_update` / `done` 等）不产出消息，不在对比之列。
 pub fn projected_event_timestamps(dir: &std::path::Path, id: Uuid) -> Vec<u64> {

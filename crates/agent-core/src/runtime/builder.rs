@@ -245,7 +245,7 @@ fn for_each_event(log: &Arc<dyn EventLog>, id: Uuid, mut visit: impl FnMut(&Even
 /// | --- | --- | --- | --- |
 /// | `user` | `User` | `payload.text` | — |
 /// | `text` | `Assistant` | `payload.text` | — |
-/// | `tool_use` | `ToolCall` | `summarize_args(payload.args)` | `{name, args_ref: None, ..}` |
+/// | `tool_use` | `ToolCall` | `summarize_args(payload.args)` | `{name, args_ref: payload.argsRef, ..}` |
 /// | `tool_result` | `ToolResult` | `payload.preview` | `{name, result_ref: payload.resultRef, ..}` |
 ///
 /// `content` 一律取事件 payload，不重算：`user` / `text` 生产时已脱敏一次
@@ -253,11 +253,19 @@ fn for_each_event(log: &Arc<dyn EventLog>, id: Uuid, mut visit: impl FnMut(&Even
 /// 是唯一例外——事件里存的是脱敏后的 `args` 对象，而历史 `content` 是它的
 /// `summarize_args` 摘要，重建必须经**同一个函数**才能逐字相同。
 ///
-/// 已知缺口：`tool_use` payload 没有 `args_ref`（blob 引用只进内存历史），
-/// 重建时 `ToolInfo.args_ref` 只能留 `None`；补该字段需改事件生产端，另开卡。
-/// 事件里 `error` 与 `warning` 不带消息体（`error` 无消息行），故都不投影。
+/// **消息时间随事件落盘**：`ts_ms` **优先**取 `payload.tsMs`（生产端取消息时间时
+/// 的**同一次**时钟读数），缺失才回退 `event.ts_ms`。回退路径是给本卡之前写下的
+/// 旧日志留的降级门：它们 payload 里没有该字段，重建仍必须成功（时间取事件落盘
+/// 时刻，与旧行为逐字一致），不得因此判为坏事件。
+///
+/// 事件自足：`tool_use` payload 带 `argsRef`（可为 null）⇒ 重建能取回同一个 blob
+/// 引用；事件里 `error` 与 `warning` 不带消息体（`error` 无消息行），故都不投影。
 fn replay_message(event: &Event) -> Result<Option<Message>, String> {
-    let ts_ms = event.ts_ms;
+    let ts_ms = event
+        .payload
+        .get("tsMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(event.ts_ms);
     let text = |field: &str| -> Result<String, String> {
         event
             .payload
@@ -266,10 +274,10 @@ fn replay_message(event: &Event) -> Result<Option<Message>, String> {
             .map(str::to_string)
             .ok_or_else(|| format!("payload.{field} 缺失或不是字符串"))
     };
-    let tool_info = |name: String, result_ref: Option<String>| ToolInfo {
+    let tool_info = |name: String, args_ref: Option<String>, result_ref: Option<String>| ToolInfo {
         name,
-        // 事件 payload 无 args_ref ⇒ 只能留 None（已知缺口，见上）。
-        args_ref: None,
+        // `argsRef` 可为 null（blob 写入失败时生产端就发 null）⇒ 缺失即 None。
+        args_ref,
         result_ref,
         ms: None,
     };
@@ -297,7 +305,15 @@ fn replay_message(event: &Event) -> Result<Option<Message>, String> {
                 role: Role::ToolCall,
                 // 与生产端 `record_tool_call` 同一函数 ⇒ 摘要文本逐字相同。
                 content: Redactor::default_v0().summarize_args(&args),
-                tool: Some(tool_info(name, None)),
+                tool: Some(tool_info(
+                    name,
+                    event
+                        .payload
+                        .get("argsRef")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    None,
+                )),
                 ts_ms,
             })
         }
@@ -306,6 +322,7 @@ fn replay_message(event: &Event) -> Result<Option<Message>, String> {
             content: text("preview")?,
             tool: Some(tool_info(
                 text("name")?,
+                None,
                 event
                     .payload
                     .get("resultRef")
