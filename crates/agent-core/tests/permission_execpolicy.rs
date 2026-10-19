@@ -4,7 +4,8 @@
 //! - `.ssh/id_rsa` 读 → deny（即使 saved allow）；`.cargo/registry` → allow；未知域名 → ask；
 //! - saved allow 覆盖项目层 ask；deny 层不被 saved 覆盖；
 //! - 多请求汇总：任一 deny → deny；ask+allow 混合 → ask；
-//! - 沙箱优先：probe Some + 命令类 → allow；probe None → 仍 ask；
+//! - 沙箱优先：probe Some + 命令类 → allow；probe None → 仍 ask（真实探测链路见
+//!   `permission_platform_probe.rs`）；
 //! - 工具级门短路顺序不变（未注册/白名单/readonly 仍是 deny，敏感动作仍是 ask）。
 
 use std::collections::BTreeSet;
