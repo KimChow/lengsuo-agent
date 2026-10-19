@@ -14,6 +14,14 @@ pub const DEFAULT_APPROVAL_TIMEOUT_MS: u64 = 120_000;
 /// RPC 默认超时（§2：默认 30s）。
 pub const DEFAULT_RPC_TIMEOUT_MS: u64 = 30_000;
 
+/// 单回合步数上限默认值（金标 opencode `packages/schema/src/agent.ts:33` 的
+/// `steps: PositiveInt.pipe(optional)` + `llm.ts:226`
+/// `stepLimitReached = agent.info.steps !== undefined && step >= agent.info.steps`）。
+///
+/// v0 复用 agent loop 的既有熔断阈值（[`crate::r#loop::DEFAULT_MAX_STEPS`]）：
+/// 配置只是把这条默认变成可覆盖的，**默认行为完全不变**（本卡的兼容性硬约束）。
+pub const DEFAULT_MAX_TURN_STEPS: usize = crate::r#loop::DEFAULT_MAX_STEPS;
+
 /// 运行时配置（v0 全量字段）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -24,6 +32,19 @@ pub struct RuntimeConfig {
     /// 跨会话记忆开关（product-direction §3：默认关，显式开启）。
     #[serde(default)]
     pub memory_enabled: bool,
+    /// 单回合步数上限（一步 = 一次逻辑 LLM 调用）。
+    ///
+    /// 语义与金标 `agent.steps` 一致：达上限仍不收敛 ⇒ 末步缴械（见
+    /// `runtime/turns.rs`）。`#[serde(default)]` 保证旧载荷（无该字段）反序列化
+    /// 回默认值；`apply_patch` 侧按 `PositiveInt` 口径校验（正整数，
+    /// 0/负数/非整数一律 `InvalidConfig` 且整体失败、原配置不变）。
+    #[serde(default = "default_max_turn_steps")]
+    pub max_turn_steps: usize,
+}
+
+/// serde 缺字段默认值（与 [`RuntimeConfig::default_v0`] 保持一致）。
+fn default_max_turn_steps() -> usize {
+    DEFAULT_MAX_TURN_STEPS
 }
 
 impl RuntimeConfig {
@@ -34,6 +55,7 @@ impl RuntimeConfig {
             rpc_timeout_ms: DEFAULT_RPC_TIMEOUT_MS,
             default_mode: Mode::Ask,
             memory_enabled: false,
+            max_turn_steps: DEFAULT_MAX_TURN_STEPS,
         }
     }
 
@@ -49,6 +71,7 @@ impl RuntimeConfig {
             match key.as_str() {
                 "approvalTimeoutMs" => next.approval_timeout_ms = positive_ms(key, value)?,
                 "rpcTimeoutMs" => next.rpc_timeout_ms = positive_ms(key, value)?,
+                "maxTurnSteps" => next.max_turn_steps = positive_usize(key, value)?,
                 "memoryEnabled" => {
                     let b = value.as_bool().ok_or_else(|| {
                         CoreError::InvalidConfig(format!("memoryEnabled 非法: {value}"))
@@ -93,4 +116,23 @@ fn positive_ms(key: &str, value: &Value) -> Result<u64, CoreError> {
         return Err(CoreError::InvalidConfig(format!("{key} 必须大于 0")));
     }
     Ok(raw)
+}
+
+/// 正整数校验（金标 `packages/schema/src/schema.ts:3` 的
+/// `PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))`）。
+///
+/// `Value::as_u64` 只在 JSON 值为**整数且 ≥ 0** 时命中：负数、浮点（含 `2.0`
+/// 这类整值浮点——不是 `Schema.Int`）、字符串、布尔、null、数组/对象都落 `None`
+/// ⇒ `InvalidConfig`；0 单独按「必须大于 0」拒绝。两条失败路径都发生在
+/// `apply_patch` 组装 `next` 的中途，调用方（`Runtime::config_set`）不会写回，
+/// 所以整体失败、原配置不变——与既有 `positive_ms` 逐条同形。
+fn positive_usize(key: &str, value: &Value) -> Result<usize, CoreError> {
+    let raw = value
+        .as_u64()
+        .ok_or_else(|| CoreError::InvalidConfig(format!("{key} 必须是非负整数")))?;
+    if raw == 0 {
+        return Err(CoreError::InvalidConfig(format!("{key} 必须大于 0")));
+    }
+    usize::try_from(raw)
+        .map_err(|_| CoreError::InvalidConfig(format!("{key} 超出本平台 usize 表示范围")))
 }
