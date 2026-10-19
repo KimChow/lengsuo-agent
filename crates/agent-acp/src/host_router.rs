@@ -21,9 +21,7 @@ use crate::control::{
 };
 use crate::error::Error;
 use crate::message::JsonRpcNotification;
-use crate::message::{
-    JsonRpcErrorObject, JsonRpcRequest, JsonRpcResponse, Message, RequestId,
-};
+use crate::message::{JsonRpcErrorObject, JsonRpcRequest, JsonRpcResponse, Message, RequestId};
 use crate::router::{ControlHandler, RpcHandler, RpcOutcome, ACP_ERROR_CONNECTION_CLOSED};
 use crate::transport::{FrameSink, FrameSource, SourceEvent, SourcePull};
 
