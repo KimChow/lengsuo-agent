@@ -199,5 +199,8 @@ pub fn spawn_and_wait(
         stdout: stdout_bytes,
         stderr: stderr_bytes,
         sandbox: SandboxType::WindowsRestrictedToken,
+        // Windows 后端尚未接入有界执行层：如实报告未超时/未截断。
+        timed_out: false,
+        truncated: false,
     })
 }

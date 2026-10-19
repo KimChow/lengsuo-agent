@@ -16,11 +16,12 @@
 //! 9. `--cap-drop ALL`，然后 `-- program args`
 
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
+use std::process::Command as ProcessCommand;
 
 use crate::baseline::{env_passlist, is_denied_path};
+use crate::bounded;
 use crate::types::{
-    CommandSpec, ExecOutcome, ExecStatus, SandboxError, SandboxPolicy, SandboxType,
+    CommandSpec, ExecBounds, ExecOutcome, SandboxError, SandboxPolicy, SandboxType,
     SandboxablePreference,
 };
 
@@ -235,13 +236,23 @@ fn push_path(argv: &mut Vec<String>, p: &Path) {
     argv.push(p.to_string_lossy().into_owned());
 }
 
-/// 主 API：按偏好/策略分发执行（真实探测）。
+/// 主 API：按偏好/策略分发执行（真实探测），使用 [`ExecBounds::default`]。
 pub fn run_sandboxed(
     spec: CommandSpec,
     pref: SandboxablePreference,
     policy: SandboxPolicy,
 ) -> Result<ExecOutcome, SandboxError> {
-    run_sandboxed_with(&SystemProbe, spec, pref, policy)
+    run_sandboxed_bounded(spec, pref, policy, ExecBounds::default())
+}
+
+/// 主 API（有界版）：`bounds` 同时约束 bwrap 与 Forbid 直跑两条路径。
+pub fn run_sandboxed_bounded(
+    spec: CommandSpec,
+    pref: SandboxablePreference,
+    policy: SandboxPolicy,
+    bounds: ExecBounds,
+) -> Result<ExecOutcome, SandboxError> {
+    run_sandboxed_with_bounded(&SystemProbe, spec, pref, policy, bounds)
 }
 
 /// 注入版分发：降级链与 preference 语义的完整实现。
@@ -254,9 +265,20 @@ pub fn run_sandboxed_with(
     pref: SandboxablePreference,
     policy: SandboxPolicy,
 ) -> Result<ExecOutcome, SandboxError> {
+    run_sandboxed_with_bounded(probe, spec, pref, policy, ExecBounds::default())
+}
+
+/// 注入版分发（有界版）：与 [`run_sandboxed_with`] 同语义，超时/输出上限由 `bounds` 决定。
+pub fn run_sandboxed_with_bounded(
+    probe: &impl SandboxProbe,
+    spec: CommandSpec,
+    pref: SandboxablePreference,
+    policy: SandboxPolicy,
+    bounds: ExecBounds,
+) -> Result<ExecOutcome, SandboxError> {
     // Forbid：明确不沙箱 → 非沙箱直跑（env 仍按 R8 清洗），一次探测都不发生。
     if pref == SandboxablePreference::Forbid {
-        return run_unsandboxed(spec);
+        return run_unsandboxed(spec, bounds);
     }
     let detection = detect_sandbox_detailed_with(probe);
     let Some(target) = detection.sandbox else {
@@ -276,7 +298,7 @@ pub fn run_sandboxed_with(
         });
     };
     match target {
-        SandboxType::LinuxSeccomp => run_bwrap(spec),
+        SandboxType::LinuxSeccomp => run_bwrap(spec, bounds),
         other => Err(SandboxError::Unavailable(format!(
             "{} is not a Linux sandbox backend",
             other.as_metric_tag()
@@ -284,60 +306,29 @@ pub fn run_sandboxed_with(
     }
 }
 
-fn run_unsandboxed(spec: CommandSpec) -> Result<ExecOutcome, SandboxError> {
+fn run_unsandboxed(spec: CommandSpec, bounds: ExecBounds) -> Result<ExecOutcome, SandboxError> {
     let label = spec.program.to_string_lossy().into_owned();
     let mut cmd = ProcessCommand::new(&spec.program);
     cmd.args(&spec.args)
         .env_clear()
-        .envs(env_passlist(&spec.env))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .envs(env_passlist(&spec.env));
     if let Some(cwd) = &spec.cwd {
         cmd.current_dir(cwd);
     }
-    capture(cmd, SandboxType::None, &label)
+    bounded::capture(cmd, SandboxType::None, &label, bounds)
 }
 
 /// bwrap 沙箱执行。
 /// TODO(seccomp-apply): 把 `seccomp::linux_seccomp_profile()` 编译为 BPF 并经 fd 传给
 /// `--seccomp <fd>`（参照 参考实现 linux-sandbox/src/seccomp.rs）。当前仅 bwrap 命名空间/绑定层
 /// 生效，seccomp profile 只以构造+断言存在——**未应用，不得声称已生效**。
-fn run_bwrap(spec: CommandSpec) -> Result<ExecOutcome, SandboxError> {
+fn run_bwrap(spec: CommandSpec, bounds: ExecBounds) -> Result<ExecOutcome, SandboxError> {
     let bwrap = find_system_bwrap_in_path()
         .ok_or_else(|| SandboxError::Unavailable("bwrap not found in PATH".to_string()))?;
     let masks = masks_for(&spec);
     let argv = build_bwrap_argv(&spec, &masks);
     let label = bwrap.to_string_lossy().into_owned();
     let mut cmd = ProcessCommand::new(&bwrap);
-    cmd.args(&argv)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    capture(cmd, SandboxType::LinuxSeccomp, &label)
-}
-
-fn capture(
-    mut cmd: ProcessCommand,
-    sandbox: SandboxType,
-    label: &str,
-) -> Result<ExecOutcome, SandboxError> {
-    let out = cmd
-        .output()
-        .map_err(|e| SandboxError::Spawn(format!("{label}: {e}")))?;
-    Ok(ExecOutcome {
-        status: to_exec_status(&out.status),
-        stdout: out.stdout,
-        stderr: out.stderr,
-        sandbox,
-    })
-}
-
-fn to_exec_status(status: &std::process::ExitStatus) -> ExecStatus {
-    use std::os::unix::process::ExitStatusExt;
-    ExecStatus {
-        code: status.code(),
-        signal: status.signal(),
-        success: status.success(),
-    }
+    cmd.args(&argv);
+    bounded::capture(cmd, SandboxType::LinuxSeccomp, &label, bounds)
 }

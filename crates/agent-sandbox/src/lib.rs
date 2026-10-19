@@ -13,6 +13,8 @@
 // 仅限 windows target、且为外部 API 调用的强制 unsafe；仓库「生产网络代码禁 unsafe」规则不受影响。
 
 mod baseline;
+#[cfg(target_os = "linux")]
+mod bounded;
 mod denial;
 mod types;
 
@@ -22,8 +24,8 @@ pub use baseline::{
 };
 pub use denial::{is_likely_executor_managed_sandbox_denied, is_likely_sandbox_denied};
 pub use types::{
-    CommandSpec, ExecOutcome, ExecStatus, NetworkMode, SandboxError, SandboxPolicy, SandboxType,
-    SandboxablePreference,
+    CommandSpec, ExecBounds, ExecOutcome, ExecStatus, NetworkMode, SandboxError, SandboxPolicy,
+    SandboxType, SandboxablePreference,
 };
 
 #[cfg(target_os = "linux")]
@@ -40,8 +42,9 @@ pub use linux::wsl::{is_wsl1, proc_version_indicates_wsl1, WSL1_BWRAP_WARNING};
 #[cfg(target_os = "linux")]
 pub use linux::{
     build_bwrap_argv, detect_sandbox_detailed_with, detect_sandbox_with, find_bwrap_in_path_with,
-    find_system_bwrap_in_path, get_platform_sandbox, masks_for, run_sandboxed, run_sandboxed_with,
-    SandboxDetection, SandboxProbe, SystemProbe,
+    find_system_bwrap_in_path, get_platform_sandbox, masks_for, run_sandboxed,
+    run_sandboxed_bounded, run_sandboxed_with, run_sandboxed_with_bounded, SandboxDetection,
+    SandboxProbe, SystemProbe,
 };
 
 #[cfg(target_os = "macos")]
