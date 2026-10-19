@@ -29,16 +29,25 @@ async fn request(port: u16, token: &str, action: &str, payload: Value) -> (u16, 
     }).await.expect("bounded RPC")
 }
 
-/// 审批超时压到 80ms：快速验证过期路径而不拖慢测试。
-fn runtime(dir: &std::path::Path) -> Runtime {
-    let gate =
-        PermissionGate::new(ToolRegistry::new()).with_approval_timeout(Duration::from_millis(80));
+/// 审批超时按用例指定。
+///
+/// 只有显式验证过期路径的用例才该用短超时；其余用例必须留出足够窗口——
+/// 审批从 `request_approval` 起算，而其后还要 `GatewayHandle::start`
+/// （绑端口 + 起 tokio 任务），冷启动下几十毫秒的窗口会被吃掉，导致
+/// 本该 approved 的应答被判成 `timedOut`（曾在集成门禁上稳定复现）。
+fn runtime_with_timeout(dir: &std::path::Path, timeout: Duration) -> Runtime {
+    let gate = PermissionGate::new(ToolRegistry::new()).with_approval_timeout(timeout);
     Runtime::builder()
         .workdir(dir)
         .provider(Arc::new(EchoProvider))
         .gate(gate)
         .build()
         .unwrap()
+}
+
+/// 普通用例：5s 窗口，远大于起服开销，不参与过期语义。
+fn runtime(dir: &std::path::Path) -> Runtime {
+    runtime_with_timeout(dir, Duration::from_secs(5))
 }
 
 async fn gateway(dir: &std::path::Path, rt: Runtime) -> GatewayHandle {
@@ -200,7 +209,8 @@ async fn approval_respond_is_one_shot() {
 #[tokio::test]
 async fn approval_response_after_expiry_is_timed_out_deny() {
     let dir = tempfile::tempdir().unwrap();
-    let rt = runtime(dir.path()); // 80ms 审批超时
+    // 过期用例：显式压到 80ms，随后 sleep 150ms 越过截止点。
+    let rt = runtime_with_timeout(dir.path(), Duration::from_millis(80));
     let session = local_session(&rt, "late");
     let a = rt.request_approval(session.id, "t", &json!({})).unwrap();
     let g = gateway(dir.path(), rt.clone()).await;
