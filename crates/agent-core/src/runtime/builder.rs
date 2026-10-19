@@ -8,6 +8,7 @@ pub struct RuntimeBuilder {
     gate: Option<PermissionGate>,
     config: Option<RuntimeConfig>,
     task_board: Option<TaskBoard>,
+    tool_executor: Option<Arc<dyn ToolExecutor + Send + Sync>>,
 }
 
 impl RuntimeBuilder {
@@ -39,6 +40,14 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn task_board(mut self, board: TaskBoard) -> Self {
         self.task_board = Some(board);
+        self
+    }
+
+    /// 注入工具执行器：工具步按权限门判定真实执行并结算结果；
+    /// 不注入（默认 `None`）保持 pending 占位（执行由宿主承担）。
+    #[must_use]
+    pub fn tool_executor(mut self, executor: Arc<dyn ToolExecutor + Send + Sync>) -> Self {
+        self.tool_executor = Some(executor);
         self
     }
 
@@ -98,6 +107,7 @@ impl RuntimeBuilder {
                 self.config.unwrap_or_else(RuntimeConfig::default_v0),
             )),
             tasks: Arc::new(Mutex::new(self.task_board.unwrap_or_default())),
+            executor: self.tool_executor,
         })
     }
 }

@@ -3,15 +3,19 @@
 //! 步语义：一步 = 一次逻辑 LLM 调用。
 //! - 每步只发一次 provider 调用；步在**首个工具调用**处终结，同批尾随的文本/结束项
 //!   不在本步内存里续消费，由重读历史后的新一步重新产出；
-//! - 工具调用先落进会话历史，本步随即以「待宿主执行」结果结算；下一步**重读会话历史**
-//!   （ToolCall 与 ToolResult 成对在列）后再发起新的一次调用；
-//! - 运行时不含工具执行器：真实结果由宿主经 [`Runtime::record_tool_result`] 回填；
+//! - 工具调用先落进会话历史再结算结果；下一步**重读会话历史**（ToolCall 与
+//!   ToolResult 成对在列）后再发起新的一次调用；
+//! - 工具步结算（金标 opencode `step.ts:91-134`：门检 → executeTool → 截断入
+//!   历史 → 发布；失败走 failTool 结算成结果而非中断回合）：注入执行器时按
+//!   [`Runtime::check_tool`] 判定真实执行；未注入/需审批时保持「待宿主执行」
+//!   占位，真实结果由宿主经 [`Runtime::record_tool_result`] 回填；
 //! - 步数达上限仍未收敛 ⇒ **末步缴械**（金标 opencode `max-steps.ts` + `llm.ts` 的
 //!   `stepLimitReached` 分支）：以 `toolChoice=none` 追加一次纯文本总结步
 //!   （`MAX_STEPS_PROMPT` 临时进请求历史副本，工具定义保留以维持 provider 缓存
 //!   前缀），该步的工具请求不执行、回错误结果，随后以
 //!   `done{status:"max_steps_reached"}` 收口（沿用既有熔断事件形状）。
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
@@ -23,15 +27,11 @@ use crate::provider::{ProviderStep, StepOptions, ToolChoice};
 use crate::r#loop::{DEFAULT_MAX_STEPS, MAX_STEPS_PROMPT};
 use crate::schema::{Event, Message, Role, Session, SessionStatus, ToolInfo};
 
+use super::execute::ToolStepOutcome;
 use super::{narrow, now_ms, Runtime, TurnReceipt, CONTENT_PREVIEW_CHARS};
 
 /// 单回合步数上限（一步 = 一次逻辑 LLM 调用）；复用 agent loop 的熔断阈值，不另造。
 const MAX_TURN_STEPS: usize = DEFAULT_MAX_STEPS;
-
-/// 工具步的占位结算结果：运行时无执行器，先把「待宿主执行」写进历史，
-/// 使续步重读到的历史里 ToolCall/ToolResult 成对；真实结果由宿主回填。
-const PENDING_TOOL_RESULT: &str =
-    r#"{"status":"pending","note":"工具调用已持久化，执行由宿主承担"}"#;
 
 impl Runtime {
     /// 发送一条用户输入，跑一个回合（echo provider 下即回显）。
@@ -67,6 +67,8 @@ impl Runtime {
         // 首步用「回合前历史 + 本轮输入」；续步重读会话历史（本轮输入已在其中）。
         let mut pre_turn = Some(history.to_vec());
         let mut steps = 0usize;
+        // 同一工具被拒后再次被拒 ⇒ 回合终止（既有 deny 语义，`loop` 同款记账）。
+        let mut denied_tools: BTreeSet<String> = BTreeSet::new();
 
         loop {
             let session = self.get_session(id)?;
@@ -91,7 +93,8 @@ impl Runtime {
                 break;
             };
 
-            // 工具步：调用先持久化，再以占位结果结算本步，下一步重读历史。
+            // 工具步：调用先持久化并广播（模型确实发出了请求），再按门检执行结算，
+            // 下一步重读历史。
             self.record_tool_call(id, &name, &args)?;
             let args = self.redactor.redact_json(&args);
             events.push(self.emit(
@@ -99,7 +102,18 @@ impl Runtime {
                 "tool_use",
                 json!({ "name": name.clone(), "args": args.clone() }),
             )?);
-            self.push_tool_result(id, &name, args, PENDING_TOOL_RESULT)?;
+            match self.execute_tool(id, &session, &name, &args, &mut denied_tools, &mut events)? {
+                ToolStepOutcome::Denied => {
+                    // 同一工具二次被拒 ⇒ 回合终止（既有 done{denied} 收口形状）。
+                    events.push(self.emit(
+                        &session,
+                        "done",
+                        json!({ "status": "denied", "steps": steps, "tool": name }),
+                    )?);
+                    break;
+                }
+                ToolStepOutcome::Settled => {}
+            }
 
             if steps >= MAX_TURN_STEPS {
                 // 到限不硬停：走一次缴械步（toolChoice=none 的纯文本总结步）。
@@ -239,11 +253,12 @@ impl Runtime {
 
     /// 把工具结果写进会话历史（大输出进 blob，消息只留摘要），不落事件。
     ///
-    /// 事件流里的 `tool_result` 由两类真实结算产生：宿主经
-    /// [`Runtime::record_tool_result`] 回填的真实结果，与缴械步的拒绝结算
-    /// （[`Runtime::reject_disabled_tool`]，本文件私有）；工具步的占位结算
+    /// 事件流里的 `tool_result` 由三类真实结算产生：宿主经
+    /// [`Runtime::record_tool_result`] 回填的真实结果、缴械步的拒绝结算
+    /// （[`Runtime::reject_disabled_tool`]，本文件私有），与注入执行器后
+    /// [`Runtime::execute_tool`] 的真实/失败/deny 结算；pending 占位
     /// 不冒充真实结果、不落事件。
-    fn push_tool_result(
+    pub(super) fn push_tool_result(
         &self,
         id: Uuid,
         tool: &str,
