@@ -1,7 +1,8 @@
 //! `agent-tools`：参考客户端 `file:*` 底层能力层的 Rust 实现。
 //!
 //! 工具（协议层）之下的能力层，把安全闸、回收站删除、组回滚与原子落盘
-//! 收在一处：所有路径先过 `guard`，越出工作区即 `Denied`。
+//! 收在一处：所有路径先过 `FsToolbox::resolve`（词法闸 → 符号链接解析 →
+//! 工作区包含判定 → 受保护分量 deny），任一步不通过即 `Denied`。
 //! 同步 IO，不依赖 tokio；不使用 `unsafe`。
 
 mod edit;
@@ -9,6 +10,7 @@ mod error;
 mod fs_ops;
 mod pathguard;
 mod read;
+mod sandbox_integrity;
 mod search;
 mod types;
 

@@ -23,7 +23,7 @@ impl crate::FsToolbox {
         pattern: &str,
         limit: usize,
     ) -> Result<(Vec<SearchHit>, usize), ToolError> {
-        let root_abs = self.guard(Path::new(root))?;
+        let root_abs = self.resolve(Path::new(root))?;
         let meta = fs::metadata(&root_abs).map_err(|e| ToolError::from_io(root_abs.clone(), e))?;
         if !meta.is_dir() {
             return Err(ToolError::NotADirectory(root_abs));
@@ -59,7 +59,7 @@ impl crate::FsToolbox {
 
     /// `file:glob`：`root` 下递归匹配**路径**模式（`**` 跨目录），返回至多 `limit` 条相对路径。
     pub fn glob(&self, root: &str, pattern: &str, limit: usize) -> Result<Vec<String>, ToolError> {
-        let root_abs = self.guard(Path::new(root))?;
+        let root_abs = self.resolve(Path::new(root))?;
         let meta = fs::metadata(&root_abs).map_err(|e| ToolError::from_io(root_abs.clone(), e))?;
         if !meta.is_dir() {
             return Err(ToolError::NotADirectory(root_abs));
@@ -98,6 +98,10 @@ impl crate::FsToolbox {
             };
             for item in read {
                 let item = item.map_err(|e| ToolError::from_io(dir.clone(), e))?;
+                // 递归搜索不得进入禁区，也不回报禁区条目。
+                if self.is_protected_name(&item.file_name()) {
+                    continue;
+                }
                 let path = item.path();
                 let meta = match fs::symlink_metadata(&path) {
                     Ok(m) => m,

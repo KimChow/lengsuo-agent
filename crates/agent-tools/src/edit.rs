@@ -14,7 +14,7 @@ impl FsToolbox {
     /// `file:write`：原子写。`expect_read == true` 时要求本次已读过该文件
     /// （协议防呆：旧内容存在但未读过 ⇒ `Denied`），避免模型盲覆盖。
     pub fn write(&self, p: &str, content: &str, expect_read: bool) -> Result<(), ToolError> {
-        let abs = self.guard(Path::new(p))?;
+        let abs = self.resolve(Path::new(p))?;
         if expect_read && fs::symlink_metadata(&abs).is_ok() && !self.is_seen(&abs) {
             return Err(ToolError::Denied(abs));
         }
@@ -26,7 +26,7 @@ impl FsToolbox {
     pub fn write_batch(&self, ops: &[WriteOp]) -> Result<(), ToolError> {
         let mut backups: Vec<Backup> = Vec::with_capacity(ops.len());
         for (idx, op) in ops.iter().enumerate() {
-            let guarded = self.guard(Path::new(&op.path));
+            let guarded = self.resolve(Path::new(&op.path));
             let abs = match guarded {
                 Ok(a) => a,
                 Err(e) => return Err(rolled_back(&mut backups, idx, e)),

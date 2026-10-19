@@ -10,15 +10,17 @@ use std::sync::Mutex;
 use uuid::Uuid;
 
 use crate::error::ToolError;
+use crate::sandbox_integrity::{lexical_fallback, prepare_policy, PreparedPolicy};
 use crate::types::{modified_ms, FileInfo};
 
-/// 文件能力层入口。`workspace` 是安全闸基准，所有路径必须先过 `guard`。
+/// 文件能力层入口。`workspace` 是安全闸基准，所有路径必须先过 `resolve`。
 ///
 /// `seen` 记录本实例读/写过的绝对路径，供 `write(expect_read = true)` 的
 /// 协议防呆使用（旧内容存在但本次未见 ⇒ 拒绝）。
 #[derive(Debug)]
 pub struct FsToolbox {
     pub workspace: PathBuf,
+    pub(crate) policy: PreparedPolicy,
     seen: Mutex<HashSet<PathBuf>>,
 }
 
@@ -26,6 +28,7 @@ impl Clone for FsToolbox {
     fn clone(&self) -> Self {
         Self {
             workspace: self.workspace.clone(),
+            policy: self.policy.clone(),
             seen: Mutex::new(self.seen.lock().map(|s| s.clone()).unwrap_or_default()),
         }
     }
@@ -33,6 +36,10 @@ impl Clone for FsToolbox {
 
 impl FsToolbox {
     /// 以工作区为安全闸基准构造。相对工作区路径按当前目录展开为绝对路径。
+    ///
+    /// 构造时准备策略（`workspace` 保留词法形态用于展示与词法闸，策略根另行解析）。
+    /// 公共 API 不返回 `Result`：根解析失败退回词法根，单条路径的 `resolve`
+    /// 仍会在同样的错误上 fail-closed。
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         let raw: PathBuf = workspace.into();
         let absolute = if raw.is_absolute() {
@@ -42,8 +49,11 @@ impl FsToolbox {
                 .map(|cwd| cwd.join(&raw))
                 .unwrap_or(raw)
         };
+        let absolute = crate::pathguard::normalize(&absolute);
+        let policy = prepare_policy(&absolute).unwrap_or_else(|_| lexical_fallback(&absolute));
         Self {
-            workspace: crate::pathguard::normalize(&absolute),
+            workspace: absolute,
+            policy,
             seen: Mutex::new(HashSet::new()),
         }
     }
@@ -63,7 +73,7 @@ impl FsToolbox {
 
     /// `file:exists`：越界与不存在一律 false（不报错，供协议层前置探测）。
     pub fn exists(&self, p: &str) -> bool {
-        match self.guard(Path::new(p)) {
+        match self.resolve(Path::new(p)) {
             Ok(abs) => fs::symlink_metadata(&abs).is_ok(),
             Err(_) => false,
         }
@@ -71,7 +81,7 @@ impl FsToolbox {
 
     /// `file:info`：大小 / 是否目录 / 修改毫秒时间戳。
     pub fn get_info(&self, p: &str) -> Result<FileInfo, ToolError> {
-        let abs = self.guard(Path::new(p))?;
+        let abs = self.resolve(Path::new(p))?;
         let meta = fs::metadata(&abs).map_err(|e| ToolError::from_io(abs.clone(), e))?;
         Ok(FileInfo {
             size: meta.len(),
@@ -82,7 +92,7 @@ impl FsToolbox {
 
     /// `file:makeDir`：递归建目录，已存在目录视为成功（幂等）。
     pub fn make_dir(&self, p: &str) -> Result<(), ToolError> {
-        let abs = self.guard(Path::new(p))?;
+        let abs = self.resolve(Path::new(p))?;
         if abs.is_dir() {
             return Ok(());
         }
@@ -95,8 +105,8 @@ impl FsToolbox {
     /// `file:remove`：进回收站（trash），不直删；目录同样支持。
     /// 工作区根本身拒绝，避免一次调用清掉整个工作区。
     pub fn remove(&self, p: &str) -> Result<(), ToolError> {
-        let abs = self.guard(Path::new(p))?;
-        if abs == self.workspace {
+        let abs = self.resolve(Path::new(p))?;
+        if abs == self.workspace || abs == self.policy.root {
             return Err(ToolError::Denied(abs));
         }
         if fs::symlink_metadata(&abs).is_err() {
@@ -113,8 +123,8 @@ impl FsToolbox {
     /// `file:rename`：目标已存在 ⇒ `TargetExists`（不覆盖）。
     /// 跨盘（EXDEV）退化为复制 + 删除。
     pub fn rename(&self, from: &str, to: &str) -> Result<(), ToolError> {
-        let src = self.guard(Path::new(from))?;
-        let dst = self.guard(Path::new(to))?;
+        let src = self.resolve(Path::new(from))?;
+        let dst = self.resolve(Path::new(to))?;
         let src_meta =
             fs::symlink_metadata(&src).map_err(|e| ToolError::from_io(src.clone(), e))?;
         if fs::symlink_metadata(&dst).is_ok() {
@@ -241,5 +251,47 @@ fn remove_tree(p: &Path) -> Result<(), ToolError> {
         fs::remove_dir(p).map_err(|e| ToolError::from_io(p.to_path_buf(), e))
     } else {
         fs::remove_file(p).map_err(|e| ToolError::from_io(p.to_path_buf(), e))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::testutil::TempDir;
+
+    /// 跨盘 rename 经安全闸后无法从 API 触发 EXDEV（两侧都必须在工作区内），
+    /// 退化机械在这里直测，保持与 `rename_拒绝经符号链接越出工作区` 互补。
+    #[test]
+    fn copy_tree_复制目录结构与链接_remove_tree_递归删除() {
+        let t = TempDir::new();
+        let src = t.path().join("src");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("sub/f.txt"), "payload").unwrap();
+        std::os::unix::fs::symlink("f.txt", src.join("sub/link.txt")).unwrap();
+
+        let dst = t.path().join("dst");
+        copy_tree(&src, &dst).unwrap();
+        assert_eq!(
+            fs::read_to_string(dst.join("sub/f.txt")).unwrap(),
+            "payload"
+        );
+        assert!(fs::symlink_metadata(dst.join("sub/link.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        remove_tree(&dst).unwrap();
+        assert!(!dst.exists());
+        // 普通文件也能整删。
+        remove_tree(&src.join("sub/f.txt")).unwrap();
+        assert!(!src.join("sub/f.txt").exists());
+    }
+
+    #[test]
+    fn is_cross_device_只认exdev() {
+        assert!(is_cross_device(&std::io::Error::from_raw_os_error(18)));
+        assert!(!is_cross_device(&std::io::Error::from(
+            std::io::ErrorKind::NotFound
+        )));
     }
 }
