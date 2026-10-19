@@ -7,6 +7,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::error::TaskError;
+use crate::event::TaskEvent;
 use crate::task::{Task, TaskStatus};
 
 /// 可注入时钟（Unix 毫秒）；确定性测试用固定值，避免时间抖动。
@@ -146,6 +147,97 @@ impl TaskBoard {
             Self::bump(&mut task.updated_at_ms, (self.now)());
         }
         Ok(task.clone())
+    }
+
+    /// 单个事件投影到看板（对照 参考客户端 projector 逐条应用 durable 事件）。
+    /// 返回 `true` 表示事件被接受；`false` 表示事件是重复/未知目标/非法载荷，被
+    /// 幂等丢弃，看板状态不变：
+    /// - `task.created`：id 不存在 ⇒ 插入快照；已存在 ⇒ 保留首个快照不覆盖
+    ///   （对照 insert `onConflictDoNothing` + 重复即缺陷不重写行）。
+    /// - `task.updated`：id 存在 ⇒ 只改给出字段；id 不存在 ⇒ 静默丢弃，不凭空插入
+    ///   （对照 SQL `update ... where id = ?` 空匹配的 no-op）。
+    ///
+    /// 状态机与 subject 校验不被事件路径绕过：任一字段非法即整事件拒绝，无部分更新。
+    pub fn apply(&mut self, event: &TaskEvent) -> bool {
+        match event {
+            TaskEvent::Created {
+                task_id, snapshot, ..
+            } => self.apply_created(*task_id, snapshot),
+            TaskEvent::Updated {
+                task_id,
+                occurred_at_ms,
+                subject,
+                status,
+            } => self.apply_updated(*task_id, *occurred_at_ms, subject.as_deref(), *status),
+        }
+    }
+
+    /// created 的投影：`task_id` 与快照 id 不一致视为畸形事件拒绝；重复投递保留
+    /// 既有行（含 `created_at_ms`）。插入同时维护会话索引，`(created_at, id)`
+    /// 排序不变式由 `list_by_session` 读侧排序保证，任何路径都不改既有 created_at。
+    fn apply_created(&mut self, task_id: Uuid, snapshot: &Task) -> bool {
+        if task_id != snapshot.id || self.tasks.contains_key(&task_id) {
+            return false;
+        }
+        self.tasks.insert(task_id, snapshot.clone());
+        self.by_session
+            .entry(snapshot.session_id)
+            .or_default()
+            .push(task_id);
+        true
+    }
+
+    /// updated 的投影：校验先于写入（与 `update_text`/`update_status` 同一规则），
+    /// `updated_at_ms` 只在有字段实际变化时以事件时间单调前移。
+    fn apply_updated(
+        &mut self,
+        task_id: Uuid,
+        occurred_at_ms: u64,
+        subject: Option<&str>,
+        status: Option<TaskStatus>,
+    ) -> bool {
+        let Some(task) = self.tasks.get_mut(&task_id) else {
+            return false;
+        };
+        if let Some(subject) = subject {
+            if subject.trim().is_empty() {
+                return false;
+            }
+        }
+        if let Some(to) = status {
+            if task.status != to && !task.status.can_transition(to) {
+                return false;
+            }
+        }
+        let mut changed = false;
+        if let Some(subject) = subject {
+            if task.subject != subject {
+                task.subject = subject.to_string();
+                changed = true;
+            }
+        }
+        if let Some(to) = status {
+            if task.status != to {
+                task.status = to;
+                changed = true;
+            }
+        }
+        if changed {
+            Self::bump(&mut task.updated_at_ms, occurred_at_ms);
+        }
+        true
+    }
+
+    /// 由事件序列重建看板：按 `occurred_at_ms` 升序、同刻按 `task_id` 升序应用，
+    /// 与输入顺序无关（确定性）。对照参考件「读侧从 durable 事件日志投影、可重放」。
+    pub fn replay(events: &[TaskEvent]) -> TaskBoard {
+        let mut ordered: Vec<&TaskEvent> = events.iter().collect();
+        ordered.sort_by_key(|event| event.replay_order());
+        let mut board = TaskBoard::new();
+        for event in ordered {
+            board.apply(event);
+        }
+        board
     }
 
     /// 会话内任务列表：按 created_at_ms 升序；同毫秒按 id 升序，保证顺序可复现。

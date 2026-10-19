@@ -8,8 +8,10 @@
 
 mod board;
 mod error;
+mod event;
 mod task;
 
 pub use board::{NowMs, TaskBoard};
 pub use error::TaskError;
+pub use event::TaskEvent;
 pub use task::{Task, TaskStatus};
