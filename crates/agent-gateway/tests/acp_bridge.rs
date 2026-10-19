@@ -324,13 +324,16 @@ async fn without_handle_existing_action_path_is_unchanged() {
 }
 
 /// 显式挂上 handle 后，**未被列入 [`agent_gateway::rpc::ACP_FORWARD_ACTIONS`] 的动作**
-/// 仍走既有实现（本卡白名单为空，故默认不改变任何动作）。这条挡住「挂 handle 就
-/// 静默改道」的回归——启用与否由白名单显式拍板。
+/// 仍走既有实现。这条挡住「挂 handle 就静默改道」的回归——启用与否由白名单显式拍板。
+///
+/// 断言取**相对**口径（只对「不在白名单里」的动作验证行为不变），而非断言白名单
+/// 整体为空：白名单是否为空是**决策状态**，会随方法面台账推进而变（现为 `["sys:ping"]`），
+/// 把它写死会让每次扩白名单都必须改这条无关测试。
 #[tokio::test]
 async fn attaching_handle_without_allowlist_keeps_existing_paths() {
     assert!(
-        agent_gateway::rpc::ACP_FORWARD_ACTIONS.is_empty(),
-        "本卡白名单应显式为空"
+        !agent_gateway::rpc::ACP_FORWARD_ACTIONS.contains(&"tool:list"),
+        "本用例用 tool:list 代表「白名单外动作」，它不应被列入白名单"
     );
     let dir = tempfile::tempdir().unwrap();
     let rt = Runtime::builder()
@@ -347,8 +350,8 @@ async fn attaching_handle_without_allowlist_keeps_existing_paths() {
     .await
     .unwrap();
 
-    let (_, ping) = gw_request(g.port(), g.token(), "sys:ping", json!({})).await;
-    assert_eq!(ping["code"], 0, "白名单外的动作仍走既有实现");
+    let (_, tools) = gw_request(g.port(), g.token(), "tool:list", json!({})).await;
+    assert_eq!(tools["code"], 0, "白名单外的动作仍走既有实现");
 
     let (_, unknown) = gw_request(g.port(), g.token(), "not:registered", json!({})).await;
     assert_eq!(unknown["code"], 404);
