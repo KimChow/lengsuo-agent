@@ -102,6 +102,31 @@ fn forbid_timeout_is_bounded_and_keeps_partial_output() {
     );
 }
 
+/// 后代在 kill 之后仍握着管道写端时：收尾不得被拖过 drain 预算（bound 是上界），
+/// 已按上限收下的字节照常返回，且**如实标记**未截断。
+///
+/// 本用例只用 `/bin/sh` 与 `sleep`，不写用户文件；孙进程是临时进程，
+/// 由本机 init 在其 5s 计时结束后回收。
+#[test]
+fn descendant_holding_pipe_does_not_stretch_the_bound() {
+    let bounds = ExecBounds {
+        timeout: Duration::from_secs(5),
+        ..ExecBounds::default()
+    };
+    let started = Instant::now();
+    // 直接子进程写下 'partial' 后立刻退出；它派生的 sleep 继承写端再活 5s。
+    let out = forbid(shell_spec("printf partial; sleep 5 &"), bounds);
+    let elapsed = started.elapsed();
+
+    assert!(!out.timed_out, "直接子进程已正常退出，不应报超时");
+    assert_eq!(out.stdout, b"partial", "写端未关前已读到的字节必须保留");
+    assert!(!out.truncated, "只收到 7 字节，不该被判截断");
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "收尾被后代拖住：{elapsed:?}（drain 只是上界）"
+    );
+}
+
 /// 输出上限按流生效：超限部分丢弃、标记 `truncated`，正常退出语义不变；
 /// 读线程在超限后继续读（否则大输出会把子进程堵死在写管道上，最终超时）。
 #[test]

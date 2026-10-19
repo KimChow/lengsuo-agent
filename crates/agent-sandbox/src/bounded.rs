@@ -2,13 +2,14 @@
 //!
 //! 分层对照 参考实现 `core/src/exec.rs` 的进程生命周期段：
 //! 常量表 → [`append_capped`] → 读线程（超限后继续读并丢弃，避免管道写满堵死子进程）
-//! → `try_wait` 轮询 + 到期 kill/wait → 在 drain 预算内收集已读字节。
+//! → `try_wait` 轮询 + 到期 kill/wait → 在 drain 预算内收集已读字节（[`Drained`]）。
 //!
 //! 与参考实现的运行时差异（Rust std 同步实现，不引入 tokio/unsafe）：
 //! 参考实现等 `child.wait()` 与过期定时器赛跑、用 `killpg` 杀整个进程组；
 //! 本模块按卡片边界只 kill **直接子进程**，并以固定间隔轮询替代异步等待。
 //! 孙进程若仍持有 stdout/stderr 写端，读线程会继续存活，但主流程只在 drain
-//! 预算内等待，绝不无限挂起。
+//! 预算内等待，绝不无限挂起；此时 [`Drained::orphaned_writers`] 为真并留一条
+//! 事实日志——不静默，也不据此声称进程树回收。
 
 use std::io::Read;
 use std::process::{Command as ProcessCommand, Stdio};
@@ -77,46 +78,59 @@ fn spawn_reader<R: Read + Send + 'static>(mut stream: R, cap: usize) -> Receiver
     rx
 }
 
+/// 收流结果：两条流的字节与封顶标记，外加「收尾时读端仍未关闭」的如实上报。
+struct Drained {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    /// 任一条流撞到 [`ExecBounds::max_output_bytes`]。
+    capped: bool,
+    /// drain 预算耗尽时仍有读端未关闭：**直接子进程已被回收**，因此握有写端的
+    /// 只可能是被它派生、且我们无权处置的后代（我们只 kill 直接子进程）。
+    /// 该布尔只是事实上报，用于日志/指标；不得据此声称完成进程树回收。
+    orphaned_writers: bool,
+}
+
 /// 在**共享** drain 预算内收齐两条流已发出的字节；预算耗尽或通道断开即返回。
 /// 已收字节始终保留——超时路径也返回 partial 输出。
 ///
 /// 两条流在同一循环里轮询（而不是逐条各等满预算）：被孙进程握住写端的流
 /// 因此不会把收尾时间拖成「超时 + 2×预算」。
-fn drain_both(
-    stdout_rx: Receiver<StreamEvent>,
-    stderr_rx: Receiver<StreamEvent>,
-) -> (Vec<u8>, bool, Vec<u8>, bool) {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let mut stdout_capped = false;
-    let mut stderr_capped = false;
+fn drain_both(stdout_rx: Receiver<StreamEvent>, stderr_rx: Receiver<StreamEvent>) -> Drained {
+    let mut d = Drained {
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+        capped: false,
+        orphaned_writers: false,
+    };
     let mut stdout_done = false;
     let mut stderr_done = false;
     let deadline = Instant::now() + IO_DRAIN_TIMEOUT;
     while !stdout_done || !stderr_done {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
+            // 预算耗尽而读端仍在：写端被后代握着（见 [`Drained::orphaned_writers`]）。
+            d.orphaned_writers = !stdout_done || !stderr_done;
             break;
         }
         let step = remaining.min(DRAIN_POLL_INTERVAL);
         if !stdout_done {
             match stdout_rx.recv_timeout(step) {
-                Ok(StreamEvent::Chunk(chunk)) => stdout.extend_from_slice(&chunk),
-                Ok(StreamEvent::Capped) => stdout_capped = true,
+                Ok(StreamEvent::Chunk(chunk)) => d.stdout.extend_from_slice(&chunk),
+                Ok(StreamEvent::Capped) => d.capped = true,
                 Err(RecvTimeoutError::Disconnected) => stdout_done = true,
                 Err(RecvTimeoutError::Timeout) => {}
             }
         }
         if !stderr_done {
             match stderr_rx.recv_timeout(step) {
-                Ok(StreamEvent::Chunk(chunk)) => stderr.extend_from_slice(&chunk),
-                Ok(StreamEvent::Capped) => stderr_capped = true,
+                Ok(StreamEvent::Chunk(chunk)) => d.stderr.extend_from_slice(&chunk),
+                Ok(StreamEvent::Capped) => d.capped = true,
                 Err(RecvTimeoutError::Disconnected) => stderr_done = true,
                 Err(RecvTimeoutError::Timeout) => {}
             }
         }
     }
-    (stdout, stdout_capped, stderr, stderr_capped)
+    d
 }
 
 /// 执行已配置好 stdio 的命令，并在 `bounds` 内收尾。
@@ -172,14 +186,18 @@ pub(crate) fn capture(
         }
     };
 
-    let (stdout, stdout_capped, stderr, stderr_capped) = drain_both(stdout_rx, stderr_rx);
+    let drained = drain_both(stdout_rx, stderr_rx);
+    // 事实级日志：有后代在 drain 预算后仍握着管道写端时，明确记一笔——不静默。
+    if drained.orphaned_writers {
+        eprintln!("{label}: descendants still hold stdout/stderr after drain budget");
+    }
     Ok(ExecOutcome {
         status: to_exec_status(&status),
-        stdout,
-        stderr,
+        stdout: drained.stdout,
+        stderr: drained.stderr,
         sandbox,
         timed_out,
-        truncated: stdout_capped || stderr_capped,
+        truncated: drained.capped,
     })
 }
 
