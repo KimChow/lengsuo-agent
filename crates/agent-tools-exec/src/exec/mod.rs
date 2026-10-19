@@ -6,6 +6,7 @@
 
 mod env;
 pub mod guard;
+pub mod guarded;
 mod process;
 
 use std::path::Path;
