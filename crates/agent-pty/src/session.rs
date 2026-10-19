@@ -19,6 +19,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use tokio::sync::mpsc;
 
 use crate::config::PtyConfig;
+use crate::env_safety;
 use crate::error::PtyError;
 use crate::ring::ByteRing;
 
@@ -100,6 +101,10 @@ pub(crate) fn spawn(cfg: &PtyConfig) -> Result<Spawned, PtyError> {
     for (key, value) in &cfg.env {
         cmd.env(key, value);
     }
+    // 请求上下文环境清洗：继承环境与 `PtyConfig.env` 覆盖都不得把会话/请求标识
+    // 带进子进程。放在覆盖之后，故显式 `cfg.env` 也无法重新注入这些键；
+    // PATH/TERM/普通自定义变量不受影响。这不是沙箱边界（见 `env_safety` 模块文档）。
+    env_safety::scrub_request_context_env(&mut cmd);
 
     let child = pair.slave.spawn_command(cmd).map_err(PtyError::io)?;
     let pid = child.process_id();
