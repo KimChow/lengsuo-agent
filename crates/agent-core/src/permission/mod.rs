@@ -13,6 +13,8 @@
 //!      都命中 allow → allow；否则维持工具级结论（deny 可收紧，全 allow 可放宽，不升级）。
 //! 7. 沙箱优先门（参考端 A22-1）：命令执行类工具结论为 ask 且沙箱后端可用
 //!    → allow（跳过人工审批；执行层沙箱失败时自行降级回审批链）。
+//!    探测默认关闭：只有宿主显式调用 [`PermissionGate::with_platform_sandbox_probe`]
+//!    （真实平台探测）或 [`PermissionGate::with_sandbox_probe`]（注入式，测试用）才启用。
 //!
 //! 审批：`request_approval` 挂起，`wait` 带超时（超时按 deny 语义并清理挂起项），
 //! `respond` 一次性应答（重复应答 → `ApprovalAnswered`，未知 id → `ApprovalNotFound`）。
@@ -143,12 +145,32 @@ impl PermissionGate {
     }
 
     /// 注入沙箱后端探测：返回 `Some(后端名)` 视为可沙箱（沙箱优先门生效前提）。
+    /// 测试与需要自定义探测面的宿主使用；生产路径用
+    /// [`Self::with_platform_sandbox_probe`]。
     #[must_use]
     pub fn with_sandbox_probe<F>(mut self, probe: F) -> Self
     where
         F: Fn() -> Option<String> + Send + Sync + 'static,
     {
         self.sandbox_probe = Some(Arc::new(probe));
+        self
+    }
+
+    /// 接真实平台探测：每次判定调用 [`agent_sandbox::get_platform_sandbox`]，
+    /// 把可用后端映射为指标标签（[`agent_sandbox::SandboxType::as_metric_tag`]）
+    /// 喂给同一个沙箱优先门。
+    ///
+    /// **默认不启用**：[`Self::new`] 与既有构造保持无探测（门不生效），
+    /// 宿主必须显式选用本构造才启用沙箱优先门。
+    #[must_use]
+    pub fn with_platform_sandbox_probe(mut self) -> Self {
+        self.sandbox_probe = Some(Arc::new(|| {
+            agent_sandbox::get_platform_sandbox().and_then(|sandbox| {
+                // `SandboxType::None` 不是可用后端；不能仅因标签非空就放行。
+                (sandbox != agent_sandbox::SandboxType::None)
+                    .then(|| sandbox.as_metric_tag().to_string())
+            })
+        }));
         self
     }
 
