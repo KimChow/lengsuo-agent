@@ -127,7 +127,7 @@ impl RuntimeBuilder {
 
 /// 启动重建：逐会话回放事件日志，过滤 `task.` 前缀事件，反序列化为 `TaskEvent`
 /// 后按事件 seq 顺序 apply（`replay` 返回即 seq 升序，不自行排序——事件 seq 就是
-/// 顺序，对照 opencode projector 按 durable seq 消费）。
+/// 顺序——durable 事件流本身即权威次序，不另行排序）。
 /// 解析失败的事件跳过并打日志计数：一条坏事件不得让整个运行时起不来。
 fn replay_task_board(log: &Arc<dyn EventLog>) -> TaskBoard {
     let mut board = TaskBoard::new();
@@ -172,10 +172,9 @@ fn replay_task_board(log: &Arc<dyn EventLog>) -> TaskBoard {
 
 /// 启动重建：按事件 seq 顺序把会话重建为消息序列（读侧投影）。
 ///
-/// 语义出处：金标 opencode `packages/core/src/session/history.ts:78-116`
-/// （`messageEntries` 按 `seq` 升序读出会话消息行、逐行解码，读侧不重新排序）
-/// 与 `packages/core/src/session/projector.ts`（durable 事件是权威，消息是它的
-/// 投影）。本仓把这条链路落在启动回放上：**消息不是权威，事件才是**——进程重启
+/// 语义约定：**durable 事件是权威，消息只是它的事件投影**；读侧按 `seq` 升序
+/// 读出会话消息行、逐行解码，从不重新排序、也从不反向写回事件面。本仓把这条
+/// 链路落在启动回放上：**消息不是权威，事件才是**——进程重启
 /// 后用 `user` / `text` / `tool_use` / `tool_result` 四类事件按 seq 重放，重建
 /// `Session.messages`。运行期仍以内存为准，重建只发生在启动时，且是**只读**操作
 /// （不为重建写任何事件，对照 `history.ts` 的纯读路径）。

@@ -6,9 +6,8 @@
 
 //! 启动时从事件日志重建会话消息历史（W1-core）：读侧投影。
 //!
-//! 语义出处：金标 opencode `packages/core/src/session/history.ts`（`messageEntries`
-//! 按 `seq` 升序读出会话消息行、逐行解码、坏行跳过）与
-//! `packages/core/src/session/projector.ts`（durable 事件是权威，消息行是它的投影）。
+//! 语义约定：durable 事件是权威，消息行只是它的投影——按 `seq` 升序读出会话
+//! 消息行、逐行解码、坏行跳过。
 //! 映射表、分页坑、坏事件策略与 `args_ref` 缺口见 `docs/session-rebuild-status.md`。
 //!
 //! 覆盖（对应卡面 6 例）：无工具回合重启逐条相等；工具回合 ToolCall/ToolResult 成对
