@@ -21,8 +21,12 @@
 //! 目标串约定：归一化后的字符串（家目录相对路径、域名或命令串）；
 //! 归一化与越权检测属执行层职责，本 crate 只判。
 
+//! argv 级进程策略评估见 [`argv`]（已分词命令的前缀匹配，最严决策优先，
+//! 与本文件的首命中语义互不影响）。
+
 #![forbid(unsafe_code)]
 
+pub mod argv;
 mod matcher;
 mod policy;
 mod types;
