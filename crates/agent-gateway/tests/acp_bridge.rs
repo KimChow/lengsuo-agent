@@ -75,15 +75,6 @@ fn loopback_pair() -> (AcpHostHandle, agent_acp::host::Host) {
     )
 }
 
-/// 轮询等待条件成立（转发是同步阻塞的，但对端应答由分派线程异步写出）。
-fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
-    let deadline = Instant::now() + WAIT;
-    while !cond() {
-        assert!(Instant::now() < deadline, "等待超时：{what}");
-        std::thread::sleep(Duration::from_millis(2));
-    }
-}
-
 /// 转发调用放到线程里跑（它同步阻塞等应答），主线程负责喂对端。
 fn forward_in_thread(
     handle: AcpHostHandle,

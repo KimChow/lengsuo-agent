@@ -334,10 +334,7 @@ impl AcpHostHandle {
                 RpcOutcome::Ok(v) => Some(v.clone()),
                 RpcOutcome::Err(_) => None,
             },
-            error: match outcome {
-                RpcOutcome::Ok(_) => None,
-                RpcOutcome::Err(e) => Some(e),
-            },
+            error: outcome.err(),
         })
     }
 
