@@ -16,7 +16,10 @@
 //!   `plan.exit(approved = true)` 切到 Craft 继续，`approved = false` ⇒ [`LoopStatus::Aborted`]；
 //! - `plan.enter` 用于非规划模式（Expert）显式进入规划态；
 //! - 同一工具在被拒绝后再次请求 ⇒ [`LoopStatus::Denied`]（防对同一被拒工具空转）；
-//! - 回合数达 `LoopLimits::max_steps` 仍未收敛 ⇒ [`LoopStatus::MaxStepsReached`]。
+//! - 回合数达 `LoopLimits::max_steps` 仍未收敛 ⇒ 末步缴械：以 `toolChoice=none`
+//!   追加一次纯文本总结步（`MAX_STEPS_PROMPT` 进请求、工具定义保留以维持
+//!   provider 缓存前缀），随后以 [`LoopStatus::MaxStepsReached`] 收口（金标
+//!   opencode `max-steps.ts` + `llm.ts` 的 `stepLimitReached` 分支）。
 //!
 //! 本卡不接真实工具与真实模型：trait 由宿主实现，`EchoProvider` 之外另有测试用 Mock。
 //!
@@ -37,7 +40,7 @@ use crate::schema::{Event, Mode};
 
 pub use types::{
     ChatProvider, ChatTurn, LoopLimits, LoopOutcome, LoopStatus, PlanGate, ToolCall, ToolExecutor,
-    DEFAULT_MAX_STEPS,
+    DEFAULT_MAX_STEPS, MAX_STEPS_PROMPT,
 };
 
 /// Agent loop。

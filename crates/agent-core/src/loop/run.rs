@@ -2,13 +2,14 @@
 
 use std::collections::BTreeSet;
 
-use serde_json::json;
+use serde_json::{json, Value};
 
+use crate::provider::{StepOptions, ToolChoice};
 use crate::schema::{EventKind, Mode};
 
 use super::guard::CallOutcome;
 use super::support::tool_result;
-use super::types::{LoopOutcome, LoopStatus};
+use super::types::{LoopOutcome, LoopStatus, MAX_STEPS_PROMPT};
 use super::AgentLoop;
 
 /// 交付物意图关键词（卡面冻结：创建/写入/修改）。
@@ -31,19 +32,8 @@ impl<'a> AgentLoop<'a> {
 
         loop {
             if steps >= self.limits.max_steps {
-                self.emit(
-                    EventKind::Done.as_str(),
-                    json!({
-                        "status": "max_steps_reached",
-                        "steps": steps,
-                        "maxSteps": self.limits.max_steps,
-                    }),
-                );
-                return Ok(LoopOutcome {
-                    status: LoopStatus::MaxStepsReached,
-                    steps,
-                    final_text,
-                });
+                // 到限不硬停：走一次缴械步（toolChoice=none 的纯文本总结步）。
+                return self.run_surrender_step(&messages, &tool_defs, steps, final_text);
             }
             let turn = self.provider.chat(&messages, &tool_defs)?;
             steps += 1;
@@ -132,6 +122,63 @@ impl<'a> AgentLoop<'a> {
             // 门禁/白名单可能在 `plan.enter` / `plan.exit` 后变化：重建可见工具面。
             tool_defs = self.tool_defs();
         }
+    }
+
+    /// 末步缴械（金标 opencode `max-steps.ts` + `llm.ts:226-247` 的
+    /// `stepLimitReached` 分支 + `step.ts:91-94`）：到限不硬停，把
+    /// [`MAX_STEPS_PROMPT`] 作为 assistant 消息追加进**本次请求**末尾（不进
+    /// 进行中的消息历史——它不是真实产出），以 `toolChoice=none` 再发一次真实
+    /// provider 调用并计入 steps；工具定义保留在请求里以维持 provider 的缓存
+    /// 前缀。该步若仍返回工具调用 ⇒ 不执行，按 `step.ts` 的 `executeTool` 回
+    /// 错误结果，随后以 `done{max_steps_reached}` 收口。
+    fn run_surrender_step(
+        &mut self,
+        messages: &[Value],
+        tool_defs: &[Value],
+        mut steps: usize,
+        mut final_text: String,
+    ) -> Result<LoopOutcome, String> {
+        let mut request = messages.to_vec();
+        request.push(json!({ "role": "assistant", "content": MAX_STEPS_PROMPT }));
+        let turn = self.provider.chat_with_options(
+            &request,
+            tool_defs,
+            &StepOptions {
+                tool_choice: ToolChoice::None,
+            },
+        )?;
+        steps += 1;
+        if !turn.text.is_empty() {
+            self.emit(EventKind::Text.as_str(), json!({"text": turn.text}));
+            final_text = turn.text.clone();
+        }
+        for call in &turn.tool_calls {
+            self.emit(
+                EventKind::ToolUse.as_str(),
+                json!({"id": call.id, "name": call.name, "args": call.args}),
+            );
+            let error = json!({
+                "type": "error",
+                "message": "Tools are disabled after the maximum agent steps",
+            });
+            self.emit(
+                EventKind::ToolResult.as_str(),
+                json!({"id": call.id, "name": call.name, "result": error, "isError": true}),
+            );
+        }
+        self.emit(
+            EventKind::Done.as_str(),
+            json!({
+                "status": "max_steps_reached",
+                "steps": steps,
+                "maxSteps": self.limits.max_steps,
+            }),
+        );
+        Ok(LoopOutcome {
+            status: LoopStatus::MaxStepsReached,
+            steps,
+            final_text,
+        })
     }
 
     /// 交付物提醒：仅 Craft/Expert、任务文本含写意图、且从未成功调用写/执行工具。

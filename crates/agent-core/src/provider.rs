@@ -43,6 +43,23 @@ pub struct TurnContext {
     pub user_text: String,
 }
 
+/// 单次 provider 步的工具选择（金标 `llm.ts` 的 `toolChoice`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolChoice {
+    /// 模型自主决定是否用工具（默认，既有行为）。
+    #[default]
+    Auto,
+    /// 禁用工具：maxSteps 末步缴械专用（仍返回文本）。
+    None,
+}
+
+/// 单次 provider 步的请求选项。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StepOptions {
+    /// 工具选择。
+    pub tool_choice: ToolChoice,
+}
+
 /// 模型/回合提供方。
 pub trait Provider: Send + Sync {
     /// 针对会话最新一条用户输入产出步骤序列（echo provider 返回固定两步）。
@@ -62,6 +79,21 @@ pub trait Provider: Send + Sync {
         context: &TurnContext,
     ) -> Result<Vec<ProviderStep>, CoreError> {
         self.next_steps(context.session_id, &context.user_text)
+    }
+
+    /// 针对完整回合上下文 + 请求选项产出步骤序列（末步缴械以
+    /// `tool_choice: None` 调用，见 `loop` 的 `MAX_STEPS_PROMPT`）。
+    ///
+    /// 默认实现忽略选项并降级到 [`Provider::next_steps_with_context`]，
+    /// 既有实现方无需改动；真实适配器应覆写本方法把 `toolChoice`
+    /// 透传给上游模型。
+    fn next_steps_with_options(
+        &self,
+        context: &TurnContext,
+        options: &StepOptions,
+    ) -> Result<Vec<ProviderStep>, CoreError> {
+        let _ = options;
+        self.next_steps_with_context(context)
     }
 }
 

@@ -15,8 +15,10 @@ use agent_core::{AgentLoop, ChatProvider, ChatTurn, LoopLimits, LoopStatus, Plan
 
 #[test]
 fn max_steps_breaks_the_loop() {
+    // 30 个工具步跑满上限后不硬停：再备一步缴械总结（toolChoice=none 的纯文本步）。
     let turns = (0..LoopLimits::default().max_steps)
         .map(|i| turn("还在跑。", call("task.list", json!({"page": i}))))
+        .chain(std::iter::once(turn("到限，缴械总结。", vec![])))
         .collect();
     let provider = MockProvider::new(turns);
     let executor = MockExecutor::default();
@@ -30,17 +32,23 @@ fn max_steps_breaks_the_loop() {
     )
     .expect("熔断应正常返回");
     assert_eq!(outcome.status, LoopStatus::MaxStepsReached);
-    assert_eq!(outcome.steps, 30, "默认 30 回合熔断");
-    assert_eq!(provider.chat_calls(), 30, "provider 不被超调");
-    assert_eq!(executor.executed().len(), 30, "每回合一个合法只读工具");
+    assert_eq!(outcome.steps, 31, "默认 30 回合熔断 + 1 缴械步");
+    assert_eq!(provider.chat_calls(), 31, "缴械步是一次真实 provider 调用");
+    assert_eq!(
+        executor.executed().len(),
+        30,
+        "每回合一个合法只读工具，缴械步不执行"
+    );
     assert_eq!(events.last().expect("有事件").0, EventKind::Done.as_str());
     assert_eq!(events.last().expect("有事件").1["maxSteps"], 30);
 }
 
 #[test]
 fn custom_limits_break_earlier() {
-    let turns = (0..5)
+    // max_steps=2：第 3 次调用即缴械步，脚本须在索引 2 备文本回合。
+    let turns = (0..2)
         .map(|_| turn("还在跑。", call("task.list", json!({"page": 1}))))
+        .chain(std::iter::once(turn("到限，缴械总结。", vec![])))
         .collect();
     let provider = MockProvider::new(turns);
     let executor = MockExecutor::default();
@@ -54,8 +62,9 @@ fn custom_limits_break_earlier() {
     )
     .expect("自定义熔断");
     assert_eq!(outcome.status, LoopStatus::MaxStepsReached);
-    assert_eq!(outcome.steps, 2);
-    assert_eq!(outcome.final_text, "还在跑。");
+    assert_eq!(outcome.steps, 3, "2 个工具步 + 1 缴械步");
+    assert_eq!(outcome.final_text, "到限，缴械总结。");
+    assert_eq!(provider.chat_calls(), 3, "到限即缴械收口，不超调");
 }
 
 #[test]

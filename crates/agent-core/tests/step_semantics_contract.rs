@@ -322,12 +322,15 @@ fn step_boundary_events_present() {
 
 /// C5（差距 R5/R7，规格 §4）：maxSteps 熔断末步语义——到限不是硬停，而是**再走
 /// 一步缴械的纯文本步**（金标 `llm.ts:226,240-244` + `max-steps.ts`）。用 AgentLoop
-/// 的 `MockProvider`（`agent_support`，可观测每回合 `tool_names()`）断言：max_steps=2
-/// 且脚本全带工具时，存在第 3 次调用且其工具面为空、无第 3 次执行、final_text 非空。
-/// 现状 loop.rs:218-233 到限直接 break ⇒ 失败。
+/// 的 `MockProvider`（`agent_support`，可观测每回合 `tool_names()`/`options_at`）断言：
+/// max_steps=2 且脚本全带工具时，存在第 3 次调用（= 缴械步），该步以
+/// `toolChoice=none` 发起、**工具定义保留在请求里**（保 provider 缓存前缀）、
+/// `MAX_STEPS_PROMPT` 作为 assistant 消息进请求末尾；末步仍返回的工具调用不执行、
+/// 回错误 tool_result；final_text 非空。
 #[test]
-#[ignore = "待裁决：末步缴械属 AgentLoop（loop.rs）范围，非本卡 run_turn 范围；且与既有 agent_loop_limits 的 max_steps_breaks_the_loop / custom_limits_break_earlier 冲突——末步会多一次 provider 调用（30→31）并耗尽脚本，断言零改动下无法并存"]
 fn max_steps_final_step_disables_tools() {
+    use agent_core::provider::{StepOptions, ToolChoice};
+    use agent_core::r#loop::MAX_STEPS_PROMPT;
     use agent_core::schema::Event;
     use agent_core::{AgentLoop, LoopLimits, LoopStatus, PlanGate};
     use agent_support::{call, turn, MockExecutor, MockProvider, Recorder};
@@ -353,16 +356,42 @@ fn max_steps_final_step_disables_tools() {
 
     let outcome = agent.run("列任务").expect("熔断应正常返回");
     assert_eq!(outcome.status, LoopStatus::MaxStepsReached);
+    assert_eq!(outcome.steps, 3, "steps 含缴械步（= 实际 provider 调用数）");
     assert_eq!(
         provider.chat_calls(),
         3,
         "到限后必须追加一次末步调用（金标 toolChoice:none 的总结步），而非硬停"
     );
+    // 末步以 toolChoice=none 发起，但工具定义保留在请求里（金标 llm.ts:243-244
+    // "Keep tool definitions on the final Step to preserve the provider's cached prefix."）。
+    assert_eq!(
+        provider.options_at(2),
+        Some(StepOptions {
+            tool_choice: ToolChoice::None
+        }),
+        "末步必须走带选项入口且 toolChoice=none"
+    );
     assert!(
-        provider.tool_names()[2].is_empty(),
-        "末步可见工具面必须为空: {:?}",
+        !provider.tool_names()[2].is_empty(),
+        "末步工具定义必须保留（不得清空工具面）: {:?}",
         provider.tool_names()
     );
+    // MAX_STEPS_PROMPT 作为 assistant 消息追加进末步请求末尾（金标 llm.ts:240-241）。
+    let last = provider.msgs_at(2).last().expect("末步请求有消息").clone();
+    assert_eq!(last["role"], "assistant");
+    assert_eq!(last["content"], MAX_STEPS_PROMPT, "缴械提示必须逐字进请求");
     assert_eq!(executor.executed().len(), 2, "末步不得执行工具");
     assert!(!outcome.final_text.is_empty(), "熔断末步必须产出总结文本");
+    // 末步仍返回的工具调用 ⇒ 不执行，恰回一条错误 tool_result（金标 step.ts:91-94）。
+    let rejected: Vec<Value> = rec
+        .events()
+        .into_iter()
+        .filter(|ev| ev.kind == "tool_result" && ev.payload["isError"] == true)
+        .map(|ev| ev.payload)
+        .collect();
+    assert_eq!(rejected.len(), 1, "缴械步的每个工具请求恰回一条错误结果");
+    assert_eq!(
+        rejected[0]["result"]["message"],
+        "Tools are disabled after the maximum agent steps"
+    );
 }

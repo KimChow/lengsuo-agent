@@ -6,7 +6,11 @@
 //! - 工具调用先落进会话历史，本步随即以「待宿主执行」结果结算；下一步**重读会话历史**
 //!   （ToolCall 与 ToolResult 成对在列）后再发起新的一次调用；
 //! - 运行时不含工具执行器：真实结果由宿主经 [`Runtime::record_tool_result`] 回填；
-//! - 步数达上限仍未收敛 ⇒ 以 `done{status:"max_steps_reached"}` 收口（沿用既有熔断事件形状）。
+//! - 步数达上限仍未收敛 ⇒ **末步缴械**（金标 opencode `max-steps.ts` + `llm.ts` 的
+//!   `stepLimitReached` 分支）：以 `toolChoice=none` 追加一次纯文本总结步
+//!   （`MAX_STEPS_PROMPT` 临时进请求历史副本，工具定义保留以维持 provider 缓存
+//!   前缀），该步的工具请求不执行、回错误结果，随后以
+//!   `done{status:"max_steps_reached"}` 收口（沿用既有熔断事件形状）。
 
 use std::sync::{Arc, Mutex};
 
@@ -15,8 +19,8 @@ use uuid::Uuid;
 
 use crate::error::CoreError;
 use crate::permission::Decision;
-use crate::provider::ProviderStep;
-use crate::r#loop::DEFAULT_MAX_STEPS;
+use crate::provider::{ProviderStep, StepOptions, ToolChoice};
+use crate::r#loop::{DEFAULT_MAX_STEPS, MAX_STEPS_PROMPT};
 use crate::schema::{Event, Message, Role, Session, SessionStatus, ToolInfo};
 
 use super::{narrow, now_ms, Runtime, TurnReceipt, CONTENT_PREVIEW_CHARS};
@@ -98,15 +102,8 @@ impl Runtime {
             self.push_tool_result(id, &name, args, PENDING_TOOL_RESULT)?;
 
             if steps >= MAX_TURN_STEPS {
-                events.push(self.emit(
-                    &session,
-                    "done",
-                    json!({
-                        "status": "max_steps_reached",
-                        "steps": steps,
-                        "maxSteps": MAX_TURN_STEPS,
-                    }),
-                )?);
+                // 到限不硬停：走一次缴械步（toolChoice=none 的纯文本总结步）。
+                self.run_surrender_step(id, &mut steps, &mut events)?;
                 break;
             }
         }
@@ -117,6 +114,96 @@ impl Runtime {
             events,
             last_seq: current.last_seq,
         })
+    }
+
+    /// 末步缴械（金标 opencode `max-steps.ts` + `llm.ts:226-247` 的
+    /// `stepLimitReached` 分支 + `step.ts:91-94`）：到限不硬停，把
+    /// [`MAX_STEPS_PROMPT`] 作为 assistant 消息**临时**拼进本次请求的 history
+    /// 副本（不写会话历史——它不是真实产出），以 `tool_choice=None` 再发一次
+    /// 真实 provider 调用并计入 steps。该步的工具调用不执行（不调
+    /// [`Runtime::record_tool_call`]、不发待执行占位），按 `step.ts` 的
+    /// `executeTool` 回错误结果，回合以 `done{max_steps_reached}` 收口。
+    fn run_surrender_step(
+        &self,
+        id: Uuid,
+        steps: &mut usize,
+        events: &mut Vec<Event>,
+    ) -> Result<(), CoreError> {
+        let session = self.get_session(id)?;
+        // 续步口径：历史重读会话消息、本轮输入不再重复出现。
+        let mut history = session.messages.clone();
+        history.push(Message {
+            role: Role::Assistant,
+            content: MAX_STEPS_PROMPT.to_string(),
+            tool: None,
+            ts_ms: now_ms(),
+        });
+        let context = self.build_turn_context(&session, &history, "");
+        let batch = self.provider.next_steps_with_options(
+            &context,
+            &StepOptions {
+                tool_choice: ToolChoice::None,
+            },
+        )?;
+        *steps += 1;
+
+        for item in batch {
+            match item {
+                ProviderStep::Thinking(note) => {
+                    events.push(self.emit(
+                        &session,
+                        "thinking",
+                        json!({ "text": self.redact(&note) }),
+                    )?);
+                }
+                ProviderStep::Text(reply) => {
+                    let reply = self.redact(&reply);
+                    events.push(self.emit(&session, "text", json!({ "text": reply }))?);
+                    self.push_message(id, Role::Assistant, reply, None)?;
+                }
+                // 缴械步止于首个工具调用：请求被拒不执行，回合就此收口。
+                ProviderStep::ToolCall { name, args } => {
+                    self.reject_disabled_tool(id, &session, &name, args, events)?;
+                    break;
+                }
+                ProviderStep::Finished => break,
+            }
+        }
+
+        events.push(self.emit(
+            &session,
+            "done",
+            json!({
+                "status": "max_steps_reached",
+                "steps": *steps,
+                "maxSteps": MAX_TURN_STEPS,
+            }),
+        )?);
+        Ok(())
+    }
+
+    /// 缴械步工具请求的拒绝结算（金标 `step.ts:91-94`）：不执行、不落 ToolCall
+    /// 消息（未获准的调用不进历史），只回一条错误 `tool_result`（消息 + 事件，
+    /// 错误文本为金标原文）。
+    fn reject_disabled_tool(
+        &self,
+        id: Uuid,
+        session: &Session,
+        name: &str,
+        args: Value,
+        events: &mut Vec<Event>,
+    ) -> Result<(), CoreError> {
+        let error = json!({
+            "type": "error",
+            "message": "Tools are disabled after the maximum agent steps",
+        });
+        self.push_tool_result(id, name, args, &error.to_string())?;
+        events.push(self.emit(
+            session,
+            "tool_result",
+            json!({ "name": name, "result": error, "isError": true }),
+        )?);
+        Ok(())
     }
 
     /// 消费一步的产出：逐条落事件，遇工具调用或结束即止（批内尾随项属新一步）。
@@ -152,8 +239,10 @@ impl Runtime {
 
     /// 把工具结果写进会话历史（大输出进 blob，消息只留摘要），不落事件。
     ///
-    /// 事件流里的 `tool_result` 只由真实结果（宿主经 [`Runtime::record_tool_result`]
-    /// 回填）产生；工具步的占位结算不冒充真实结果。
+    /// 事件流里的 `tool_result` 由两类真实结算产生：宿主经
+    /// [`Runtime::record_tool_result`] 回填的真实结果，与缴械步的拒绝结算
+    /// （[`Runtime::reject_disabled_tool`]，本文件私有）；工具步的占位结算
+    /// 不冒充真实结果、不落事件。
     fn push_tool_result(
         &self,
         id: Uuid,
