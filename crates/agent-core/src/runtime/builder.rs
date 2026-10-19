@@ -1,4 +1,7 @@
+use super::tasks::TASK_EVENT_KIND_PREFIX;
 use super::*;
+use crate::event_log::DEFAULT_PAGE_LIMIT;
+use agent_tasks::TaskEvent;
 
 /// 运行时构造器。
 #[derive(Default)]
@@ -51,7 +54,8 @@ impl RuntimeBuilder {
         self
     }
 
-    /// 组装：事件日志与 blob 目录建在 workdir 下；启动回放恢复 seq 与会话索引。
+    /// 组装：事件日志与 blob 目录建在 workdir 下；启动回放恢复 seq、会话索引
+    /// 与任务看板（未注入看板时由 `task.` 前缀事件重建）。
     pub fn build(self) -> Result<Runtime, CoreError> {
         let workdir = self
             .workdir
@@ -94,6 +98,12 @@ impl RuntimeBuilder {
                 },
             );
         }
+        // 注入优先：调用方经 task_board() 注入自定义看板时不做重建（测试可控）；
+        // 未注入则从事件日志重建（W1：任务事件启动回放）。
+        let tasks = Arc::new(Mutex::new(match self.task_board {
+            Some(board) => board,
+            None => replay_task_board(&log),
+        }));
         Ok(Runtime {
             workdir: workdir.clone(),
             sessions: Arc::new(Mutex::new(sessions)),
@@ -106,10 +116,55 @@ impl RuntimeBuilder {
             config: Arc::new(Mutex::new(
                 self.config.unwrap_or_else(RuntimeConfig::default_v0),
             )),
-            tasks: Arc::new(Mutex::new(self.task_board.unwrap_or_default())),
+            tasks,
             executor: self.tool_executor,
         })
     }
+}
+
+/// 启动重建：逐会话回放事件日志，过滤 `task.` 前缀事件，反序列化为 `TaskEvent`
+/// 后按事件 seq 顺序 apply（`replay` 返回即 seq 升序，不自行排序——事件 seq 就是
+/// 顺序，对照 opencode projector 按 durable seq 消费）。
+/// 解析失败的事件跳过并打日志计数：一条坏事件不得让整个运行时起不来。
+fn replay_task_board(log: &Arc<dyn EventLog>) -> TaskBoard {
+    let mut board = TaskBoard::new();
+    let mut skipped = 0usize;
+    for session_id in log.sessions() {
+        let mut after_seq = 0u64;
+        loop {
+            let Ok(page) = log.replay(session_id, after_seq, DEFAULT_PAGE_LIMIT) else {
+                // 单会话回放失败：按该会话无任务事件处理，不阻断启动。
+                skipped += 1;
+                eprintln!("runtime: 任务事件回放失败，跳过会话 {session_id}");
+                break;
+            };
+            for event in &page {
+                if !event.kind.starts_with(TASK_EVENT_KIND_PREFIX) {
+                    continue;
+                }
+                match serde_json::from_value::<TaskEvent>(event.payload.clone()) {
+                    Ok(task_event) => {
+                        board.apply(&task_event);
+                    }
+                    Err(err) => {
+                        skipped += 1;
+                        eprintln!(
+                            "runtime: 任务事件解析失败已跳过（session={session_id} seq={} kind={}）：{err}",
+                            event.seq, event.kind
+                        );
+                    }
+                }
+            }
+            if page.len() < DEFAULT_PAGE_LIMIT {
+                break;
+            }
+            after_seq = page.last().map_or(after_seq, |event| event.seq);
+        }
+    }
+    if skipped > 0 {
+        eprintln!("runtime: 任务事件启动回放共跳过 {skipped} 条坏事件");
+    }
+    board
 }
 
 /// 从事件回放里取最近一次标题（重启后 `session:list` 仍能显示标题）。
