@@ -23,7 +23,7 @@
 //! - 交付物提醒（wb 18 册 §4 的 present outcome 强制级下沉）：Craft/Expert 下
 //!   任务文本含写意图（创建/写入/修改）却整回合未成功执行任何写/执行工具且
 //!   **自然收敛** ⇒ 向会话追加一条提醒 user 消息后走一次提醒回合（正常步循
-//!   环，步数与本回合共享 [`MAX_TURN_STEPS`]），整个 `send_text` 至多一次；
+//!   环，步数与本回合共享 [`Runtime::max_turn_steps`]），整个 `send_text` 至多一次；
 //!   缴械（`Surrendered`）与被拒终止（`Aborted`）不提醒。
 //!
 //! 分层（对齐金标 `step.ts` / `llm.ts`）：[`Runtime::step`] 是「一步」的完整
@@ -41,13 +41,10 @@ use uuid::Uuid;
 use crate::error::CoreError;
 use crate::permission::Decision;
 use crate::provider::{ProviderStep, StepOptions, ToolChoice};
-use crate::r#loop::{DEFAULT_MAX_STEPS, MAX_STEPS_PROMPT};
+use crate::r#loop::MAX_STEPS_PROMPT;
 use crate::schema::{Event, Message, Mode, Role, Session, SessionStatus, ToolInfo};
 
 use super::{narrow, now_ms, Runtime, TurnReceipt, CONTENT_PREVIEW_CHARS};
-
-/// 单回合步数上限（一步 = 一次逻辑 LLM 调用）；复用 agent loop 的熔断阈值，不另造。
-const MAX_TURN_STEPS: usize = DEFAULT_MAX_STEPS;
 
 /// 交付物意图关键词（卡面冻结：创建/写入/修改；与 `loop/run.rs` 的
 /// `DELIVERABLE_KEYWORDS` 同表——该常量是 loop 模块私有，本卡不动 `loop/`，
@@ -73,6 +70,23 @@ pub enum StepOutcome {
 }
 
 impl Runtime {
+    /// 本回合实际生效的单回合步数上限（一步 = 一次逻辑 LLM 调用）。
+    ///
+    /// 对齐金标 opencode `llm.ts:226` 的 `stepLimitReached = agent.info.steps !==
+    /// undefined && step >= agent.info.steps`：上限是**每 agent 的配置值**，不是写死
+    /// 常量。本仓 agent 级配置面 v0 尚未落地，故挂在
+    /// [`RuntimeConfig::max_turn_steps`] 上，默认值仍来自既有常量
+    /// [`crate::r#loop::DEFAULT_MAX_STEPS`]（默认行为不变）。配置锁中毒时退回默认值：
+    /// 上限属安全阀，取不到配置也不该让回合起不来。
+    ///
+    /// [`RuntimeConfig::max_turn_steps`]: crate::config::RuntimeConfig::max_turn_steps
+    fn max_turn_steps(&self) -> usize {
+        self.config
+            .lock()
+            .map(|c| c.max_turn_steps)
+            .unwrap_or(crate::config::DEFAULT_MAX_TURN_STEPS)
+    }
+
     /// 发送一条用户输入，跑一个回合（echo provider 下即回显）。
     ///
     /// 单队列投递：同一会话的回合串行执行；后到的输入在回合之外排队，
@@ -124,6 +138,9 @@ impl Runtime {
         // 回合输入：原回合为本轮用户输入；提醒回合切换为提醒文案。
         let mut turn_input = text.to_string();
         let mut steps = 0usize;
+        // 上限在本回合**开头**取一次快照：回合进行中改配置不改已开跑回合的判定
+        // （一处取值，循环内复用同一数值，`maxSteps` 事件与判定必然一致）。
+        let max_turn_steps = self.max_turn_steps();
         // 同一工具被拒后再次被拒 ⇒ 回合终止（既有 deny 语义，`loop` 同款记账）。
         let mut denied_tools: BTreeSet<String> = BTreeSet::new();
         // 交付物记账（覆盖原回合 + 提醒回合）：成功执行过写/执行工具 ⇒ 不提醒。
@@ -131,7 +148,7 @@ impl Runtime {
         let mut reminder_used = false;
 
         loop {
-            let outcome = if steps >= MAX_TURN_STEPS {
+            let outcome = if steps >= max_turn_steps {
                 // 到限不硬停：走一次缴械步（toolChoice=none 的纯文本总结步）。
                 self.surrender_step(id, &mut denied_tools, &mut write_executed, &mut events)?
             } else {
@@ -199,7 +216,7 @@ impl Runtime {
                         json!({
                             "status": "max_steps_reached",
                             "steps": steps,
-                            "maxSteps": MAX_TURN_STEPS,
+                            "maxSteps": max_turn_steps,
                         }),
                     )?);
                     break;
