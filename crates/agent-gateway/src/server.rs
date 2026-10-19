@@ -22,13 +22,22 @@ use tokio::{net::TcpListener, sync::watch, task::JoinHandle};
 pub struct GatewayConfig {
     pub handshake_path: PathBuf,
     pub isolation: Isolation,
+    /// ACP 旁路句柄：默认 `None`（不挂时既有 `域:动作` 语义完全不变）。
+    pub acp: Option<crate::acp::AcpHostHandle>,
 }
 impl GatewayConfig {
     pub fn new(path: impl Into<PathBuf>, isolation: Isolation) -> Self {
         Self {
             handshake_path: path.into(),
             isolation,
+            acp: None,
         }
+    }
+    /// 显式挂上 ACP host 句柄（启用 [crate::rpc::ACP_FORWARD_ACTIONS] 里的旁路）。
+    #[must_use]
+    pub fn with_acp(mut self, acp: crate::acp::AcpHostHandle) -> Self {
+        self.acp = Some(acp);
+        self
     }
 }
 #[derive(Clone)]
@@ -37,6 +46,9 @@ pub(crate) struct App {
     pub isolation: Isolation,
     pub token: Arc<str>,
     pub closing: watch::Receiver<bool>,
+    /// ACP 旁路句柄：默认 `None`（未挂 = 既有 `域:动作` 路径逐字节不变）。
+    /// 部署方按 [`crate::rpc::ACP_FORWARD_ACTIONS`] 显式指定哪些动作走 ACP。
+    pub acp: Option<crate::acp::AcpHostHandle>,
 }
 /// Owns a single listener. Tokens are intentionally excluded from Debug.
 pub struct GatewayHandle {
@@ -65,6 +77,7 @@ impl GatewayHandle {
             isolation: config.isolation,
             token: token.clone(),
             closing: closing.clone(),
+            acp: config.acp.clone(),
         };
         let app = Router::new()
             .route("/rpc", post(crate::rpc::handle))

@@ -13,6 +13,19 @@ use uuid::Uuid;
 /// `session:replay` 缺省分页大小；上限由 core 的 `DEFAULT_PAGE_LIMIT` 钳制。
 const REPLAY_DEFAULT_LIMIT: u64 = 200;
 
+/// 可走 ACP 旁路的动作白名单：**只有**挂上 [`AcpHostHandle`] 且动作在此表内时，
+/// `run()` 才先尝试 ACP 转发。
+///
+/// 语义要点：
+/// - **默认不启用**：`App` 的 `acp` 字段为 `None`（默认）时，本表**完全不生效**，
+///   既有 11 个动作的实现路径逐字节不变（零回归）；
+/// - **不发明映射**：表里的名字即 v0 冻结动作名，转发时**原样**当 ACP method
+///   （见 `crates/agent-gateway/src/acp.rs` 的 `forward_action`），不做名字改写；
+/// - 本表是**显式**的，故「哪些动作走 ACP」由部署时拍板，不静默改变既有语义。
+///
+/// 当前为空：本卡只落地**机制**，首个可切换动作由后续卡在方法面台账冻结后填入。
+pub const ACP_FORWARD_ACTIONS: &[&str] = &[];
+
 #[derive(Deserialize)]
 pub(crate) struct Request {
     action: String,
@@ -71,7 +84,33 @@ fn own(app: &App, p: &Value) -> Result<Uuid, Failure> {
     }
     Ok(id)
 }
+/// ACP 旁路：挂了 [`AcpHostHandle`] 且动作在 [`ACP_FORWARD_ACTIONS`] 内时，先把
+/// 动作名**原样**投给 host 方法表（`forward_action`），成功即返回其载荷。
+///
+/// 返回 `Ok(Some(data))` = 已由 ACP 应答；`Ok(None)` = 不走旁路，落回既有实现。
+/// 未走成旁路的两种情况：
+/// - 未挂 handle、动作不在白名单 → `None`（既有路径不变）；
+/// - 转发出错（超时/连接终止）→ 返回 `Err`，由 `dispatch` 归入传输错误。
+///
+/// # Errors
+/// 转发传输失败（[`agent_acp::Error::Transport`]）→ `(502, "acp forwarding failed")`。
+fn acp_forward(app: &App, action: &str, p: &Value) -> Result<Option<Value>, Failure> {
+    let Some(handle) = app.acp.as_ref() else {
+        return Ok(None);
+    };
+    if !ACP_FORWARD_ACTIONS.contains(&action) {
+        return Ok(None);
+    }
+    handle
+        .forward_action(action, p)
+        .map(|outcome| Some(outcome.envelope))
+        .map_err(|_| (502, "acp forwarding failed".into()))
+}
+
 fn run(app: &App, action: &str, p: &Value) -> Result<Value, Failure> {
+    if let Some(data) = acp_forward(app, action, p)? {
+        return Ok(data);
+    }
     let rt = &app.runtime;
     Ok(match action {
         "sys:ping" => json!({"pid":std::process::id()}),
