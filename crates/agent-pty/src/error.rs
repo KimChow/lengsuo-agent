@@ -14,6 +14,18 @@ pub enum PtyError {
     /// 底层 PTY/进程操作失败；字符串为脱敏后的原因（不含凭据）。
     #[error("PTY 操作失败: {0}")]
     Io(String),
+
+    /// argv 级策略明确拒绝：未创建 PTY、未启动子进程。
+    ///
+    /// 仅由 [`PtySession::open_guarded`](crate::PtySession::open_guarded) 与
+    /// [`PtyManager::create_guarded`](crate::PtyManager::create_guarded) 产生。
+    #[error("命令被 argv 策略拒绝: {0}")]
+    PolicyDenied(String),
+
+    /// argv 级策略要求人工审批（含无匹配规则的 fail-closed）：
+    /// 未创建 PTY、未启动子进程。
+    #[error("命令需要人工审批: {0}")]
+    NeedsApproval(String),
 }
 
 impl PtyError {

@@ -26,10 +26,13 @@
 //! # }
 //! ```
 
-// 对外只暴露规格冻结的类型；`ring`/`session`/`env_safety` 是实现细节，保持私有。
+// 对外只暴露规格冻结的类型；`ring`/`session`/`env_safety`/`policy_gate`
+// 是实现细节，保持私有。
 mod env_safety;
+mod policy_gate;
 mod ring;
 mod session;
+mod session_entry;
 
 pub mod config;
 pub mod error;
@@ -39,3 +42,4 @@ pub use config::{PtyConfig, DEFAULT_COLS, DEFAULT_ROWS};
 pub use error::PtyError;
 pub use manager::{PtyManager, SessionInfo};
 pub use ring::HISTORY_BYTES;
+pub use session_entry::PtySession;

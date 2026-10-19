@@ -88,6 +88,26 @@ impl PtyManager {
 
     /// 创建终端会话，返回 terminal id。
     pub async fn create(&mut self, cfg: PtyConfig) -> Result<u64, PtyError> {
+        self.create_inner(cfg).await
+    }
+
+    /// 创建终端会话，spawn 前先做 argv 级策略判定。
+    ///
+    /// 与 [`create`] 的差别只有入口处的策略门：判定对象是与 `session::spawn`
+    /// 相同的分词结果。`Deny`/`Ask` 直接返回且不创建 PTY、不起子进程，
+    /// 也不占用会话 id。未走本入口的 [`create`] 调用不受策略约束。
+    ///
+    /// [`create`]: PtyManager::create
+    pub async fn create_guarded(
+        &mut self,
+        cfg: PtyConfig,
+        policy: &agent_execpolicy::argv::Policy,
+    ) -> Result<u64, PtyError> {
+        crate::policy_gate::check_config(policy, &cfg)?;
+        self.create_inner(cfg).await
+    }
+
+    async fn create_inner(&mut self, cfg: PtyConfig) -> Result<u64, PtyError> {
         let spawned = tokio::task::spawn_blocking(move || session::spawn(&cfg))
             .await
             .map_err(|e| PtyError::Io(format!("create 任务被中止: {e}")))??;
