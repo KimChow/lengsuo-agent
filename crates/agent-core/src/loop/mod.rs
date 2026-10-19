@@ -6,11 +6,11 @@
 //! **重新派生**本次请求（工具结算后开新步重读），[`run::StepFlow`] 四走向只报
 //! 「本步发生了什么」，回合收口归外层。
 //!
-//! **与 Runtime 的收敛状态（本卡）**：本层已按 `StepOutcome` 的四态词汇收敛结构，
-//! 但尚**不能**把 provider/executor 借给 `Runtime` 执行——`Runtime` 注入面为
-//! `Arc<dyn Provider>` / `Arc<dyn ToolExecutor + Send + Sync>`（均隐含 `'static`），
-//! 而本层持有 `&'a dyn` 借用；改签名会破坏既有调用方（测试即契约）。缺口的完整
-//! 清单与建议的最小扩法见 `docs/loop-adapter-status.md`。
+//! **与 Runtime 的收敛状态（本卡）**：本层提供两条驱动路径（见 [`Driver`]）——
+//! [`AgentLoop::new`] 的本地自驱，与 [`AgentLoop::with_runtime`] 的 `Runtime` 驱动。
+//! 后者把「一步」的历史与工具执行都交给 `Runtime`（历史落在**会话**上、每步重读；
+//! 工具由 `Runtime` 结算），本层只做回合政策与门禁。仍留在本层的缺口（B2 门禁拒绝
+//! 文案、B5 事件载荷缺 id）与建议的最小扩法见 `docs/loop-adapter-status.md`。
 //!
 //! 回合骨架（对应卡面 8 步）：
 
@@ -37,10 +37,12 @@
 //! 本卡不接真实工具与真实模型：trait 由宿主实现，`EchoProvider` 之外另有测试用 Mock。
 //!
 //! 按职责拆分：`types`（公开词汇与 trait 契约）、`run`（外层步循环 + 一步原语 + 历史组装）、
-//! `guard`（白名单与规划门禁处理）、`support`（共用小工具）。
+//! `guard`（白名单与规划门禁处理）、`support`（共用小工具）、`runtime_step`（两条驱动
+//! 路径的适配面：历史装载、消息落地、provider 调用与工具结算分发）。
 
 mod guard;
 mod run;
+mod runtime_step;
 mod support;
 mod types;
 
@@ -49,6 +51,7 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 use crate::mode::ModePolicy;
+use crate::runtime::Runtime;
 use crate::schema::{Event, Mode};
 
 pub use types::{
@@ -56,10 +59,33 @@ pub use types::{
     DEFAULT_MAX_STEPS, MAX_STEPS_PROMPT,
 };
 
+/// 一步的执行面：要么交给已建好的 [`Runtime`]，要么由本层自驱。
+///
+/// 这是缺口 B1 的解法：`Runtime` 的注入面是 `Arc<dyn Provider>` /
+/// `Arc<dyn ToolExecutor + Send + Sync>`（均隐含 `'static`），把 `AgentLoop::new`
+/// 的 `&'a dyn` 借用塞进 `Arc` 会破坏既有调用方（测试即契约）。故不改 `new` 的
+/// 签名，改用 [`AgentLoop::with_runtime`] 由宿主把**已建好的** `Runtime` 接入；
+/// 两条路径的差异只在于「谁持有历史、谁执行工具」。
+pub(super) enum Driver<'a> {
+    /// 本地自驱（[`AgentLoop::new`] 路径）：本层持有历史、本层执行工具。
+    Local {
+        provider: &'a dyn ChatProvider,
+        executor: &'a dyn ToolExecutor,
+    },
+    /// Runtime 驱动（[`AgentLoop::with_runtime`] 路径）：`Runtime` 持有历史并执行
+    /// 工具（`step_executor` 是宿主经
+    /// [`crate::runtime::RuntimeBuilder::tool_executor`] 注入给 Runtime 的那一个，
+    /// 本层只借它判「当前哪些工具可见」，不自己执行）。
+    Runtime {
+        runtime: Runtime,
+        session: Uuid,
+        step_executor: Option<&'a dyn ToolExecutor>,
+    },
+}
+
 /// Agent loop。
 pub struct AgentLoop<'a> {
-    provider: &'a dyn ChatProvider,
-    executor: &'a dyn ToolExecutor,
+    driver: Driver<'a>,
     mode: Mode,
     limits: LoopLimits,
     plan_gate: PlanGate,
@@ -75,6 +101,9 @@ pub struct AgentLoop<'a> {
 
 impl<'a> AgentLoop<'a> {
     /// 组装：provider/executor 由宿主提供；`Plan` 模式进入即规划态。
+    ///
+    /// 签名与行为（自 `new` 引入以来）**一字不变**：内部退化为
+    /// [`Driver::Local`]（本层持历史、本层执行工具）。
     pub fn new(
         provider: &'a dyn ChatProvider,
         executor: &'a dyn ToolExecutor,
@@ -85,8 +114,7 @@ impl<'a> AgentLoop<'a> {
     ) -> Self {
         let gate_active = mode == Mode::Plan || plan_gate.active;
         Self {
-            provider,
-            executor,
+            driver: Driver::Local { provider, executor },
             mode,
             limits,
             plan_gate: PlanGate {
@@ -95,6 +123,54 @@ impl<'a> AgentLoop<'a> {
             },
             emit,
             session_id: Uuid::nil(),
+            seq: 0,
+            policy: ModePolicy::of(mode),
+            write_called: false,
+            reminder_used: false,
+        }
+    }
+
+    /// 组装（缺口 B1 的解法）：把**已建好的** [`Runtime`] 接入本层，一步的历史与
+    /// 工具执行都落在 `Runtime` 上——每条消息经 [`Runtime::append_message`] 写进
+    /// 会话、每步请求由 `runtime.get_session(id).messages` **重读**派生、工具经
+    /// [`Runtime::settle_tool_call`] 真实执行并结算成会话消息。`new` 路径（本地
+    /// [`ChatProvider`] / [`ToolExecutor`] 借用）行为不变。
+    ///
+    /// 三点如实说明（详见 `docs/loop-adapter-status.md`）：
+    /// - **会话就是历史**：不另设历史容器，历史即 `session`；本构造器把
+    ///   `session_id` 一并锚定。系统提示由 `Runtime` 组上下文时按会话模式生成
+    ///   （[`Runtime::chat_turn`] → `build_turn_context`），不按字符串拼进请求。
+    /// - **`step_executor` 只是工具面来源**：本层需要「当前可见工具有哪些」才能
+    ///   构造 provider 请求；本地路径的工具面由 `ModePolicy` 直接给出，`Runtime`
+    ///   路径则借宿主注入 Runtime 的同一个执行器、按 [`Runtime::check_tool`] 判定
+    ///   可见性（口径与 [`Runtime::step`] 一致）。传 `None` 只影响工具面（请求里
+    ///   无工具定义），不影响工具执行。
+    /// - **门禁与事件仍留本层**：白名单 / 规划态判定、以及事件发射都还是本层的
+    ///   （缺口 B2/B5 未解，跨窗口签名变更另行派卡）。
+    pub fn with_runtime(
+        runtime: Runtime,
+        session: Uuid,
+        step_executor: Option<&'a dyn ToolExecutor>,
+        mode: Mode,
+        limits: LoopLimits,
+        plan_gate: PlanGate,
+        emit: &'a dyn Fn(Event),
+    ) -> Self {
+        let gate_active = mode == Mode::Plan || plan_gate.active;
+        Self {
+            driver: Driver::Runtime {
+                runtime,
+                session,
+                step_executor,
+            },
+            mode,
+            limits,
+            plan_gate: PlanGate {
+                active: gate_active,
+                approved: plan_gate.approved,
+            },
+            emit,
+            session_id: session,
             seq: 0,
             policy: ModePolicy::of(mode),
             write_called: false,

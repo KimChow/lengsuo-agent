@@ -46,14 +46,32 @@ use crate::schema::{Event, Message, Mode, Role, Session, SessionStatus, ToolInfo
 
 use super::{narrow, now_ms, Runtime, TurnReceipt, CONTENT_PREVIEW_CHARS};
 
-/// 交付物意图关键词（卡面冻结：创建/写入/修改；与 `loop/run.rs` 的
-/// `DELIVERABLE_KEYWORDS` 同表——该常量是 loop 模块私有，本卡不动 `loop/`，
-/// 故在此复刻同一张表，loop 侧收敛时去重）。
-const DELIVERABLE_KEYWORDS: [&str; 3] = ["创建", "写入", "修改"];
+/// 交付物意图关键词（卡面冻结：创建/写入/修改）。
+///
+/// **单一来源（缺口 B3 的解法）**：本表与 [`should_remind`] 是全仓唯一的提醒规则；
+/// `loop/run.rs` 不再持有自己那份副本，改为经 `crate::runtime` 的 re-export
+/// （`pub(crate) use`）调用本表与 [`Runtime::should_remind`]。
+///
+/// [`should_remind`]: Runtime::should_remind
+pub(crate) const DELIVERABLE_KEYWORDS: [&str; 3] = ["创建", "写入", "修改"];
 
-/// 交付物提醒文案（逐字沿用 `loop/run.rs` 既有原文）。
-const DELIVERABLE_REMINDER_NOTE: &str =
+/// 交付物提醒文案（**单一来源**：loop 层经 `crate::runtime` re-export 取用）。
+pub(crate) const DELIVERABLE_REMINDER_NOTE: &str =
     "尚未调用任何写/执行工具：请实际执行并给出交付物，不要声称已完成。";
+
+/// 交付物提醒的记账位（`loop` 层跨路径复用的入参）。
+///
+/// 有了它，两条驱动路径问的是**同一份规则**：本地路径自持历史与执行，故自行
+/// 记账后经本结构传入；`Runtime` 路径的历史与执行都在会话上，记账位由本层从
+/// 会话读回的 [`Settled`](crate::r#loop) 面维护。判定本身只有
+/// [`Runtime::should_remind`] 一处。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WriteLedger {
+    /// 本回合（含已跑过的提醒回合）是否成功执行过写/执行类工具。
+    pub write_executed: bool,
+    /// 提醒回合是否已用过（整个回合至多一次）。
+    pub reminder_used: bool,
+}
 
 /// 一步原语的走向（对齐金标 `step.ts` 的 `Outcome`：原语只报告本步发生了
 /// 什么，回合推进/收口策略归调用方）。
@@ -175,8 +193,14 @@ impl Runtime {
                 // 本步无工具调用 ⇒ 回合收敛（或转一次交付物提醒回合）。
                 StepOutcome::Converged => {
                     let session = self.get_session(id)?;
-                    if needs_deliverable_reminder(session.mode, text, write_executed, reminder_used)
-                    {
+                    if self.should_remind(
+                        session.mode,
+                        text,
+                        WriteLedger {
+                            write_executed,
+                            reminder_used,
+                        },
+                    ) {
                         // 提醒回合（`loop/run.rs` 同款行为下沉）：追加提醒 user
                         // 消息后走正常回合循环（首步历史取追加后的会话历史、
                         // 本轮输入 = 提醒文案），步数与本回合共享计数；整个
@@ -529,6 +553,105 @@ impl Runtime {
         Ok(self.push_tool_call(id, tool, args, self.turn_ts())?.0)
     }
 
+    /// 落一条 user / assistant 文本消息进会话（缺口 B4 的解法）。
+    ///
+    /// `Runtime` 此前只公开了工具类写消息面（[`Runtime::record_tool_call`] /
+    /// [`Runtime::record_tool_result`]）；user/assistant 文本只能经
+    /// [`Runtime::send_text`] 落，而它会自行跑完整个回合，不适合逐步驱动的宿主。
+    /// 本方法把「写一条文本消息」这一最小公开面补上，**内部复用既有
+    /// [`Runtime::push_message`]**（签名与可见性均不变），使 `loop` 的
+    /// `with_runtime` 路径能把历史真正落在会话上。
+    ///
+    /// 时间取一次时钟读数（与 [`Runtime::turn_ts`] 同一口径）；消息本身不落事件
+    /// （事件由调用方按自己的可见面决定发不发，与 `loop` 既有的 `text` 事件形状解耦）。
+    pub fn append_message(
+        &self,
+        id: Uuid,
+        role: Role,
+        content: &str,
+    ) -> Result<Session, CoreError> {
+        self.push_message(id, role, content.to_string(), None, self.turn_ts())
+    }
+
+    /// 经 `Runtime` 的 provider 面发起**一次** provider 调用（缺口 B1 的跑通件）。
+    ///
+    /// `loop` 的 `with_runtime` 路径不直接持有 `Provider`（注入面为
+    /// `Arc<dyn Provider>`，隐含 `'static`），故经本方法转调：上下文由
+    /// [`Runtime::build_turn_context`] 按 `session` 的模式与记忆组装（与
+    /// [`Runtime::send_text`] 的 `step` 同款口径，对齐金标 `session/context.ts`），
+    /// 历史取调用方给的 `history`（即 `loop` 每步从会话**重读**的那一份），
+    /// `user_text` 为空（续步口径：本轮输入早已作为会话消息在 `history` 里）。
+    ///
+    /// 返回原始 [`ProviderStep`] 序列，由 `loop` 侧译成其 [`ChatTurn`]
+    /// （`ProviderStep::ToolCall` 无 id，故 id 在 `loop` 侧按序合成；缺口 B5）。
+    ///
+    /// [`ChatTurn`]: crate::r#loop::ChatTurn
+    pub(crate) fn chat_turn(
+        &self,
+        id: Uuid,
+        history: &[Message],
+        options: Option<&StepOptions>,
+    ) -> Result<Vec<ProviderStep>, CoreError> {
+        let session = self.get_session(id)?;
+        if matches!(session.status, SessionStatus::Done | SessionStatus::Failed) {
+            return Err(CoreError::SessionClosed(id));
+        }
+        let context = self.build_turn_context(&session, history, "");
+        match options {
+            Some(options) => self.provider.next_steps_with_options(&context, options),
+            None => self.provider.next_steps_with_context(&context),
+        }
+    }
+
+    /// 结算**一次**工具调用（缺口 B1：`with_runtime` 路径的工具由 Runtime 执行）。
+    ///
+    /// 与 [`Runtime::step_with_write_ledger`] 的工具分支同款口径，但**不含**
+    /// provider 调用——`loop` 侧已在同一步里经 [`Runtime::chat_turn`] 取回工具请求，
+    /// 本方法只负责「落调用 → 门检 → 执行 → 结算结果」（金标 `step.ts:91-134`），
+    /// 使结果与调用成对进会话历史，下一步重读可复原。返回原语走向（正常为
+    /// [`StepOutcome::ToolSettled`]；`loop` 侧按每步一次调用、每次传入空 deny
+    /// 账本，故不会在此触发 `Aborted`）。
+    ///
+    /// `events` 是 Runtime 自己的事件面（落 `EventLog`）；与 `loop` 侧按既有形状
+    /// 补发的事件是两个不同的可见面（缺口 B5，见 `docs/loop-adapter-status.md`）。
+    pub(crate) fn settle_tool_call(
+        &self,
+        id: Uuid,
+        name: &str,
+        args: &Value,
+    ) -> Result<StepOutcome, CoreError> {
+        let ts = self.turn_ts();
+        let (session, args_ref) = self.push_tool_call(id, name, args, ts)?;
+        let args = self.redactor.redact_json(args);
+        let mut events = vec![self.emit(
+            &session,
+            "tool_use",
+            json!({
+                "name": name,
+                "args": args.clone(),
+                "argsRef": args_ref,
+                "tsMs": ts,
+            }),
+        )?];
+        // 单次调用、空 deny 账本：本步只结算一次，引擎侧不会在此熔断。
+        let mut denied: BTreeSet<String> = BTreeSet::new();
+        let mut write_executed = false;
+        self.execute_tool(
+            id,
+            &session,
+            name,
+            &args,
+            &mut denied,
+            &mut write_executed,
+            &mut events,
+        )
+    }
+
+    /// 交付物提醒文案（**单一来源**：`loop` 层两条路径都取这里这一份）。
+    pub(crate) fn deliverable_reminder_note(&self) -> &'static str {
+        DELIVERABLE_REMINDER_NOTE
+    }
+
     /// [`Runtime::record_tool_call`] 的实现体：**消息时间由调用方取一次时钟读数并显式
     /// 传入**，与随后 `tool_use` 事件 payload 的 `"tsMs"` 用同一次读数（理由同
     /// [`Runtime::turn_ts`]）。返回 `(会话快照, blob 引用)`，`args_ref` 由调用方随事件
@@ -574,18 +697,23 @@ impl Runtime {
     }
 }
 
-/// 交付物提醒判定（`loop/run.rs` 的 `needs_reminder` 同款规则下沉）：仅
-/// Craft/Expert、任务文本含写意图、本回合（含已跑过的提醒回合）从未成功执行
-/// 写/执行工具、且本回合尚未提醒过——四者全满足才提醒。只在自然收敛
-/// （`StepOutcome::Converged`）处调用；缴械与被拒终止不走本判定。
-fn needs_deliverable_reminder(
-    mode: Mode,
-    user_input: &str,
-    write_executed: bool,
-    reminder_used: bool,
-) -> bool {
-    !reminder_used
-        && !write_executed
+/// 交付物提醒规则（**单一来源**，缺口 B3 的解法）：仅 Craft/Expert、任务文本
+/// 含写意图、本回合（含已跑过的提醒回合）从未成功执行写/执行工具、且本回合尚未
+/// 提醒过——四者全满足才提醒。只在自然收敛（`StepOutcome::Converged`）处调用；
+/// 缴械与被拒终止不走本判定。
+///
+/// `pub(crate)` 的**纯函数**：[`Runtime::should_remind`] 与 `loop` 层两条驱动路径
+/// 都调它，关键词表与规则因此**只有本处一份**。
+pub(crate) fn deliverable_reminder(mode: Mode, user_input: &str, write: WriteLedger) -> bool {
+    !write.reminder_used
+        && !write.write_executed
         && matches!(mode, Mode::Craft | Mode::Expert)
         && DELIVERABLE_KEYWORDS.iter().any(|k| user_input.contains(k))
+}
+
+impl Runtime {
+    /// [`deliverable_reminder`] 的方法形式（`loop` 的 `Runtime` 路径经此判定）。
+    pub(crate) fn should_remind(&self, mode: Mode, user_input: &str, write: WriteLedger) -> bool {
+        deliverable_reminder(mode, user_input, write)
+    }
 }
