@@ -1,8 +1,10 @@
 //! `GET /events` WebSocket 订阅：一行一个 JSON，解析为 typed 事件。
 //!
 //! 冻结语义（AGENT-KICKOFF.md §2/§3）：
-//! - 事件名固定 8 类：`thinking / text / tool_use / tool_result / approval_request /
-//!   files / done` 加 `session_update`。
+//! - 事件名与 `agent-core::schema::EventKind` **逐项一致**（含 `user` 与
+//!   `approval_resolved`、`error`）：`user / thinking / text / tool_use / tool_result /
+//!   approval_request / approval_resolved / files / done / error / session_update`。
+//!   由 `contracts-check` 的穷举断言守住两侧不漂移。
 //! - 帧形态 `{seq, session_id, kind, payload, ts_ms}`，`seq` 会话内单调递增，
 //!   是将来分页回溯的锚点。
 //! - 鉴权同样走 `X-Gateway-Token` 头；token 不进事件、不进错误信息。
@@ -37,10 +39,15 @@ pub enum EventKind {
     ToolResult,
     /// 审批请求，UI 需挂起并等待 `approval:respond`。
     ApprovalRequest,
+    /// 审批已裁决（`approval:respond` 的结果回声；与 `agent-core::schema::EventKind`
+    /// 的 `ApprovalResolved` 逐项对齐，此前壳侧缺此变体导致该事件被拒）。
+    ApprovalResolved,
     /// 文件产出/变更。
     Files,
     /// 本轮结束。
     Done,
+    /// 错误事件（与 `agent-core::schema::EventKind` 的 `Error` 逐项对齐）。
+    Error,
     /// 会话元信息变化（状态、模式、环境绑定等）。
     SessionUpdate,
 }

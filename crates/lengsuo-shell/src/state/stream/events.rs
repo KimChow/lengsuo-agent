@@ -137,6 +137,24 @@ impl SessionStreamState {
                 self.phase = StreamPhase::AwaitingApproval;
                 Ok(())
             }
+            EventKind::ApprovalResolved => {
+                // 审批裁决回声：清掉同名挂起项（若匹配），不改阶段——
+                // 阶段推进由 UI 主动的 `respond_approval` 或后续 done/session_update 决定。
+                // 语义细化（携带 decision 落 resolved）归 shell 域的后续卡。
+                if let Some(id) = field_str(event, "approval_id").or_else(|| field_str(event, "id"))
+                {
+                    if self.approvals.pending.as_ref().is_some_and(|p| p.id == id) {
+                        self.approvals.pending = None;
+                    }
+                }
+                Ok(())
+            }
+            EventKind::Error => {
+                // 错误事件：终止流并置失败相（与 session_update{status:"failed"} 同口径）。
+                self.approvals.pending = None;
+                self.phase = StreamPhase::Failed;
+                Ok(())
+            }
             EventKind::Files => {
                 // 文件产出以引用呈现，内容不进状态（协议 §3）。
                 self.messages.push(SessionMessage {
