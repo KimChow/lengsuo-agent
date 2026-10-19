@@ -29,6 +29,12 @@ pub enum ExecError {
     /// JSON/HTML 解析失败。
     #[error("解析失败: {0}")]
     Json(String),
+    /// 策略拒绝（静态说明，不含参数值）。
+    #[error("策略拒绝: {0}")]
+    Denied(String),
+    /// 需人工审批。
+    #[error("需人工审批: {0}")]
+    NeedsApproval(String),
 }
 
 impl From<std::io::Error> for ExecError {
