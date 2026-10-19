@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::codec::{LineDecoder, DEFAULT_MAX_LINE_BYTES};
-use crate::control::{ControlRequest, ControlSubtype};
+use crate::codec::LineDecoder;
+use crate::control::ControlRequest;
 use crate::host::{HostConfig, HostEvent, NextEvent};
 use crate::host_router::{dispatch_loop, HostRouteState};
 use crate::message::{JsonRpcNotification, JsonRpcRequest, Message, RequestId};

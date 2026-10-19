@@ -23,7 +23,6 @@ use crate::error::Error;
 use crate::message::JsonRpcNotification;
 use crate::message::{
     JsonRpcErrorObject, JsonRpcRequest, JsonRpcResponse, Message, RequestId,
-    JSONRPC_ERROR_METHOD_NOT_FOUND,
 };
 use crate::router::{ControlHandler, RpcHandler, RpcOutcome, ACP_ERROR_CONNECTION_CLOSED};
 use crate::transport::{FrameSink, FrameSource, SourceEvent, SourcePull};
