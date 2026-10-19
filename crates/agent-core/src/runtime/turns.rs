@@ -15,6 +15,11 @@
 //!   （`MAX_STEPS_PROMPT` 临时进请求历史副本，工具定义保留以维持 provider 缓存
 //!   前缀），该步的工具请求不执行、回错误结果，随后以
 //!   `done{status:"max_steps_reached"}` 收口（沿用既有熔断事件形状）。
+//! - 交付物提醒（wb 18 册 §4 的 present outcome 强制级下沉）：Craft/Expert 下
+//!   任务文本含写意图（创建/写入/修改）却整回合未成功执行任何写/执行工具且
+//!   **自然收敛** ⇒ 向会话追加一条提醒 user 消息后走一次提醒回合（正常步循
+//!   环，步数与本回合共享 [`MAX_TURN_STEPS`]），整个 `send_text` 至多一次；
+//!   缴械（`Surrendered`）与被拒终止（`Aborted`）不提醒。
 //!
 //! 分层（对齐金标 `step.ts` / `llm.ts`）：[`Runtime::step`] 是「一步」的完整
 //! 原语（读会话 → 组上下文 → 恰好一次 provider 调用 → 消费产出 → 工具结算 →
@@ -32,12 +37,21 @@ use crate::error::CoreError;
 use crate::permission::Decision;
 use crate::provider::{ProviderStep, StepOptions, ToolChoice};
 use crate::r#loop::{DEFAULT_MAX_STEPS, MAX_STEPS_PROMPT};
-use crate::schema::{Event, Message, Role, Session, SessionStatus, ToolInfo};
+use crate::schema::{Event, Message, Mode, Role, Session, SessionStatus, ToolInfo};
 
 use super::{narrow, now_ms, Runtime, TurnReceipt, CONTENT_PREVIEW_CHARS};
 
 /// 单回合步数上限（一步 = 一次逻辑 LLM 调用）；复用 agent loop 的熔断阈值，不另造。
 const MAX_TURN_STEPS: usize = DEFAULT_MAX_STEPS;
+
+/// 交付物意图关键词（卡面冻结：创建/写入/修改；与 `loop/run.rs` 的
+/// `DELIVERABLE_KEYWORDS` 同表——该常量是 loop 模块私有，本卡不动 `loop/`，
+/// 故在此复刻同一张表，loop 侧收敛时去重）。
+const DELIVERABLE_KEYWORDS: [&str; 3] = ["创建", "写入", "修改"];
+
+/// 交付物提醒文案（逐字沿用 `loop/run.rs` 既有原文）。
+const DELIVERABLE_REMINDER_NOTE: &str =
+    "尚未调用任何写/执行工具：请实际执行并给出交付物，不要声称已完成。";
 
 /// 一步原语的走向（对齐金标 `step.ts` 的 `Outcome`：原语只报告本步发生了
 /// 什么，回合推进/收口策略归调用方）。
@@ -77,8 +91,10 @@ impl Runtime {
     }
 
     /// 步驱循环（回合政策层，对齐金标 `llm.ts:191-198` 的外层 while）：一步
-    /// 一次调用；工具步结算后重读历史开新步；到限转缴械步收口。每步经
-    /// [`Runtime::step`] 执行，本方法只分派 outcome 与收口 `TurnReceipt`。
+    /// 一次调用；工具步结算后重读历史开新步；到限转缴械步收口；自然收敛时
+    /// 先过交付物提醒判定（满足则追加一次提醒回合）。每步经
+    /// [`Runtime::step_with_write_ledger`] 执行，本方法只分派 outcome 与收口
+    /// `TurnReceipt`。
     fn run_turn(
         &self,
         id: Uuid,
@@ -88,34 +104,62 @@ impl Runtime {
         let mut events: Vec<Event> = Vec::new();
         // 首步用「回合前历史 + 本轮输入」；续步重读会话历史（本轮输入已在其中）。
         let mut pre_turn = Some(history.to_vec());
+        // 回合输入：原回合为本轮用户输入；提醒回合切换为提醒文案。
+        let mut turn_input = text.to_string();
         let mut steps = 0usize;
         // 同一工具被拒后再次被拒 ⇒ 回合终止（既有 deny 语义，`loop` 同款记账）。
         let mut denied_tools: BTreeSet<String> = BTreeSet::new();
+        // 交付物记账（覆盖原回合 + 提醒回合）：成功执行过写/执行工具 ⇒ 不提醒。
+        let mut write_executed = false;
+        let mut reminder_used = false;
 
         loop {
             let outcome = if steps >= MAX_TURN_STEPS {
                 // 到限不硬停：走一次缴械步（toolChoice=none 的纯文本总结步）。
-                self.surrender_step(id, &mut denied_tools, &mut events)?
+                self.surrender_step(id, &mut denied_tools, &mut write_executed, &mut events)?
             } else {
                 let (step_history, user_text) = match pre_turn.take() {
-                    Some(pre) => (pre, text),
+                    Some(pre) => (pre, turn_input.as_str()),
                     None => (self.get_session(id)?.messages.clone(), ""),
                 };
-                self.step(
+                self.step_with_write_ledger(
                     id,
                     &step_history,
                     user_text,
                     &StepOptions::default(),
                     &mut denied_tools,
+                    &mut write_executed,
                     &mut events,
                 )?
             };
             steps += 1;
 
             match outcome {
-                // 本步无工具调用 ⇒ 回合收敛。
+                // 本步无工具调用 ⇒ 回合收敛（或转一次交付物提醒回合）。
                 StepOutcome::Converged => {
                     let session = self.get_session(id)?;
+                    if needs_deliverable_reminder(session.mode, text, write_executed, reminder_used)
+                    {
+                        // 提醒回合（`loop/run.rs` 同款行为下沉）：追加提醒 user
+                        // 消息后走正常回合循环（首步历史取追加后的会话历史、
+                        // 本轮输入 = 提醒文案），步数与本回合共享计数；整个
+                        // send_text 至多一次，提醒回合自身不再触发提醒。
+                        reminder_used = true;
+                        events.push(self.emit(
+                            &session,
+                            "thinking",
+                            json!({ "reminder": DELIVERABLE_REMINDER_NOTE }),
+                        )?);
+                        self.push_message(
+                            id,
+                            Role::User,
+                            DELIVERABLE_REMINDER_NOTE.to_string(),
+                            None,
+                        )?;
+                        pre_turn = Some(self.get_session(id)?.messages);
+                        turn_input = DELIVERABLE_REMINDER_NOTE.to_string();
+                        continue;
+                    }
                     events.push(self.emit(
                         &session,
                         "done",
@@ -125,7 +169,7 @@ impl Runtime {
                 }
                 // 工具已结算 ⇒ 重读历史开下一步（或到限转缴械步）。
                 StepOutcome::ToolSettled => {}
-                // 末步缴械已执行 ⇒ 熔断收口（沿用既有事件形状）。
+                // 末步缴械已执行 ⇒ 熔断收口（沿用既有事件形状）；缴械不提醒。
                 StepOutcome::Surrendered => {
                     let session = self.get_session(id)?;
                     events.push(self.emit(
@@ -139,7 +183,8 @@ impl Runtime {
                     )?);
                     break;
                 }
-                // 同一工具二次被拒 ⇒ 回合终止（既有 done{denied} 收口形状）。
+                // 同一工具二次被拒 ⇒ 回合终止（既有 done{denied} 收口形状）；
+                // 被拒终止不提醒。
                 StepOutcome::Aborted { tool } => {
                     let session = self.get_session(id)?;
                     events.push(self.emit(
@@ -176,6 +221,8 @@ impl Runtime {
     ///
     /// `denied_tools`（同一工具二次被拒记账）与 `events`（事件累积器）由调用
     /// 方持有；本方法不发回合级 `done` 事件（那属 `run_turn` 的收口职责）。
+    /// 公开原语不带写/执行记账面（那属回合政策层 [`Runtime::run_turn`] 的
+    /// 职责），内部委托 [`Runtime::step_with_write_ledger`]（丢弃记账）。
     pub fn step(
         &self,
         id: Uuid,
@@ -183,6 +230,32 @@ impl Runtime {
         user_text: &str,
         options: &StepOptions,
         denied_tools: &mut BTreeSet<String>,
+        events: &mut Vec<Event>,
+    ) -> Result<StepOutcome, CoreError> {
+        let mut write_executed = false;
+        self.step_with_write_ledger(
+            id,
+            history,
+            user_text,
+            options,
+            denied_tools,
+            &mut write_executed,
+            events,
+        )
+    }
+
+    /// [`Runtime::step`] 的带记账实现：`write_executed` 由回合政策层持有，
+    /// 传入 [`Runtime::execute_tool`] 的执行成功分支置位（交付物提醒的判定
+    /// 输入）；语义与公开原语完全一致。
+    #[allow(clippy::too_many_arguments)]
+    fn step_with_write_ledger(
+        &self,
+        id: Uuid,
+        history: &[Message],
+        user_text: &str,
+        options: &StepOptions,
+        denied_tools: &mut BTreeSet<String>,
+        write_executed: &mut bool,
         events: &mut Vec<Event>,
     ) -> Result<StepOutcome, CoreError> {
         let session = self.get_session(id)?;
@@ -219,20 +292,29 @@ impl Runtime {
             "tool_use",
             json!({ "name": name.clone(), "args": args.clone() }),
         )?);
-        self.execute_tool(id, &session, &name, &args, denied_tools, events)
+        self.execute_tool(
+            id,
+            &session,
+            &name,
+            &args,
+            denied_tools,
+            write_executed,
+            events,
+        )
     }
 
     /// 末步缴械的政策准备 + 一步原语调用（金标 opencode `max-steps.ts` +
     /// `llm.ts:226-247` 的 `stepLimitReached` 分支 + `step.ts:91-94`）：到限
     /// 不硬停，把 [`MAX_STEPS_PROMPT`] 作为 assistant 消息**临时**拼进本次
     /// 请求的 history 副本（不写会话历史——它不是真实产出），以
-    /// `tool_choice=None` 走 [`Runtime::step`]。该步的工具调用不执行（不调
-    /// [`Runtime::record_tool_call`]、不发待执行占位），按 `step.ts` 的
-    /// `executeTool` 回错误结果，走向为 [`StepOutcome::Surrendered`]。
+    /// `tool_choice=None` 走 [`Runtime::step_with_write_ledger`]。该步的工具
+    /// 调用不执行（不调 [`Runtime::record_tool_call`]、不发待执行占位），按
+    /// `step.ts` 的 `executeTool` 回错误结果，走向为 [`StepOutcome::Surrendered`]。
     fn surrender_step(
         &self,
         id: Uuid,
         denied_tools: &mut BTreeSet<String>,
+        write_executed: &mut bool,
         events: &mut Vec<Event>,
     ) -> Result<StepOutcome, CoreError> {
         let session = self.get_session(id)?;
@@ -244,7 +326,7 @@ impl Runtime {
             tool: None,
             ts_ms: now_ms(),
         });
-        self.step(
+        self.step_with_write_ledger(
             id,
             &history,
             "",
@@ -252,6 +334,7 @@ impl Runtime {
                 tool_choice: ToolChoice::None,
             },
             denied_tools,
+            write_executed,
             events,
         )
     }
@@ -411,4 +494,20 @@ impl Runtime {
             .gate
             .check(session.mode, session.permission_mode, tool, args))
     }
+}
+
+/// 交付物提醒判定（`loop/run.rs` 的 `needs_reminder` 同款规则下沉）：仅
+/// Craft/Expert、任务文本含写意图、本回合（含已跑过的提醒回合）从未成功执行
+/// 写/执行工具、且本回合尚未提醒过——四者全满足才提醒。只在自然收敛
+/// （`StepOutcome::Converged`）处调用；缴械与被拒终止不走本判定。
+fn needs_deliverable_reminder(
+    mode: Mode,
+    user_input: &str,
+    write_executed: bool,
+    reminder_used: bool,
+) -> bool {
+    !reminder_used
+        && !write_executed
+        && matches!(mode, Mode::Craft | Mode::Expert)
+        && DELIVERABLE_KEYWORDS.iter().any(|k| user_input.contains(k))
 }

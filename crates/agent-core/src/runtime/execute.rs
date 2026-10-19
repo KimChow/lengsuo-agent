@@ -3,6 +3,10 @@
 //!
 //! 失败不中断回合：执行错误与权限拒绝都**结算成结果**（`step.ts:129-131` 的
 //! `failTool` 语义），让下一步的模型看到失败并自行纠正。
+//!
+//! 交付物记账（W1-core）：本文件的执行成功分支（`Decision::Allow` 且执行器
+//! 返回 `Ok`）是「成功执行过写/执行工具」的唯一记账点——deny / 执行失败 /
+//! pending 都不算；记账结果供 `turns.rs` 的交付物提醒判定消费。
 
 use std::collections::BTreeSet;
 
@@ -31,10 +35,13 @@ impl Runtime {
     ///   事件；同一工具二次被拒 ⇒ [`StepOutcome::Aborted`] 终止回合；
     /// - [`Decision::Allow`]：执行器真实执行——`Ok` 走既有
     ///   [`Runtime::push_tool_result`]（脱敏内建、大输出进 blob 只留 preview）
-    ///   并发 `tool_result` 事件；`Err` 结算 `{"type":"error","message":..}`
+    ///   并发 `tool_result` 事件，且**成功执行** `crate::mode::WRITE_TOOLS` 中的
+    ///   工具时置位 `write_executed`（交付物提醒的记账点：deny / 执行失败 /
+    ///   pending 都不算）；`Err` 结算 `{"type":"error","message":..}`
     ///   且 `isError=true` 并发事件，回合继续；
     /// - [`Decision::Ask`]：不在步内阻塞等待审批（宿主审批链承担），落 pending
     ///   占位续步，真实结果由宿主审批后经 [`Runtime::record_tool_result`] 回填。
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_tool(
         &self,
         id: Uuid,
@@ -42,6 +49,7 @@ impl Runtime {
         name: &str,
         args: &Value,
         denied: &mut BTreeSet<String>,
+        write_executed: &mut bool,
         events: &mut Vec<Event>,
     ) -> Result<StepOutcome, CoreError> {
         let Some(executor) = self.executor.as_ref() else {
@@ -70,6 +78,11 @@ impl Runtime {
             Decision::Allow => {
                 match executor.execute(name, args) {
                     Ok(value) => {
+                        // 交付物记账：仅「真实执行成功」置位（deny / 执行失败 /
+                        // pending 不算）。
+                        if crate::mode::WRITE_TOOLS.contains(&name) {
+                            *write_executed = true;
+                        }
                         let (_, payload) =
                             self.push_tool_result(id, name, args.clone(), &value.to_string())?;
                         events.push(self.emit(session, "tool_result", payload)?);
