@@ -10,6 +10,9 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use uuid::Uuid;
 
+/// `session:replay` 缺省分页大小；上限由 core 的 `DEFAULT_PAGE_LIMIT` 钳制。
+const REPLAY_DEFAULT_LIMIT: u64 = 200;
+
 #[derive(Deserialize)]
 pub(crate) struct Request {
     action: String,
@@ -139,6 +142,22 @@ fn run(app: &App, action: &str, p: &Value) -> Result<Value, Failure> {
             json!({"sessionId":receipt.session_id,"events":receipt.events,"lastSeq":receipt.last_seq})
         }
         "session:stop" => json!(rt.stop_session(own(app, p)?).map_err(core)?),
+        // core `Runtime::replay` 的薄暴露：`seq > after_seq` 升序一页，不做缓存/过滤/重排。
+        "session:replay" => {
+            let id = own(app, p)?;
+            // u64::MAX 会让 core 的 `after_seq + 1` 溢出 panic，边界修复归 core lane，网关先拒收。
+            let after_seq = p.get("afterSeq").and_then(Value::as_u64).ok_or_else(bad)?;
+            if after_seq == u64::MAX {
+                return Err(bad());
+            }
+            let limit = p
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(REPLAY_DEFAULT_LIMIT) as usize;
+            let events = rt.replay(id, after_seq, limit).map_err(core)?;
+            let last_seq = events.last().map(|e| e.seq).unwrap_or(after_seq);
+            json!({"events": events, "lastSeq": last_seq})
+        }
         "tool:list" => {
             // 有会话时以会话为准（并做归属校验）；无会话沿用 default_mode 兼容行为。
             let session = if p.get("id").is_some()
