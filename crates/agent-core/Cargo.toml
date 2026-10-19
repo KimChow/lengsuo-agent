@@ -10,6 +10,7 @@ description = "智能体运行时核心：会话/事件 schema、事件日志、
 agent-execpolicy = { path = "../agent-execpolicy" }
 agent-memory = { path = "../agent-memory" }
 agent-prompts = { path = "../agent-prompts" }
+agent-tasks = { path = "../agent-tasks" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

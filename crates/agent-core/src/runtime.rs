@@ -15,6 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use uuid::Uuid;
 
+use agent_tasks::TaskBoard;
+
 use crate::blobs::BlobStore;
 use crate::bus::EventHub;
 use crate::config::RuntimeConfig;
@@ -82,6 +84,8 @@ pub struct Runtime {
     provider: Arc<dyn Provider>,
     redactor: Redactor,
     config: Arc<Mutex<RuntimeConfig>>,
+    /// 会话内任务看板（task 工具族域层能力面；克隆共享，走 `*_for_session` 门）。
+    tasks: Arc<Mutex<TaskBoard>>,
 }
 
 impl Runtime {
@@ -125,7 +129,10 @@ mod approvals;
 mod bus;
 mod internals;
 mod sessions;
+mod tasks;
 mod turns;
+
+pub use tasks::{Task, TaskStatus};
 
 pub(super) fn narrow(text: &str, chars: usize) -> String {
     let mut out: String = text.chars().take(chars).collect();

@@ -46,6 +46,10 @@ pub enum CoreError {
 
     #[error("能力未实现（v0 占位）: {0}")]
     Unsupported(&'static str),
+
+    /// 任务看板操作失败；字符串透传 `agent_tasks::TaskError` 原始文案（不吞原因）。
+    #[error("{0}")]
+    Task(String),
 }
 
 impl From<agent_memory::MemoryError> for CoreError {
