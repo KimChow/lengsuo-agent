@@ -4,39 +4,28 @@
 //!
 //! | 参考件 | 职责 | 本层落点 |
 //! | --- | --- | --- |
-//! | `runner/llm.ts`（`drain` 外层 `while`） | 外层只推进步：`advanceToStep` → `runStep` → `step++`；每步 `context.load` **重读**历史 | [`AgentLoop::run`] 的 `loop`：每步经 [`History`] 组装本次请求 → [`AgentLoop::drive_step`]（一步一调用 + 结算）→ `steps += 1` |
-//! | `runner/step.ts`（`attempt`） | 一步之内做过什么、如何判定续步：返回 `Outcome` 标签，策略归外层 | [`StepFlow`]：`Converged` / `ToolSettled` / `Aborted`；本层只分派，不据其再执行工具 |
+//! | `runner/llm.ts`（`drain` 外层 `while`） | 外层只推进步：`advanceToStep` → `runStep` → `step++`；每步 `context.load` **重读**历史 | [`AgentLoop::run`] 的 `loop`：每步经 [`AgentLoop::load_step`] **重读**本轮请求 → [`AgentLoop::drive_step`]（一步一调用 + 结算）→ `steps += 1` |
+//! | `runner/step.ts`（`attempt`） | 一步之内做过什么、如何判定续步：返回 `Outcome` 标签，策略归外层 | [`StepFlow`]：`Converged` / `ToolSettled` / `PlanRejected` / `FatalDenied`；本层只分派，不据其再执行工具 |
 //! | `session/inbox.ts`（`promote`） | 待办输入提升为下一轮输入 | [`AgentLoop::run`] 的 `user_input` / 提醒注记：首步与提醒步为本轮输入，续步为空串（历史里已有） |
 //!
-//! 与 [`Runtime::step`](crate::runtime::Runtime::step) 的关系与**尚未承接的缺口**
-//! 见 `docs/loop-adapter-status.md`：本层已按原语的走向词汇收敛结构（四态、一步一
-//! 调用、工具结算后开新步），但尚不能把 provider/executor 借给 Runtime 执行
-//! （`Arc<dyn Provider>` 的 `'static` 约束 + `AgentLoop::new` 的借用签名），
-//! 故本层仍是「一步」的执行者。
+//! 与 [`Runtime::step`](crate::runtime::Runtime::step) 的关系见
+//! `docs/loop-adapter-status.md`：本层已按原语的走向词汇收敛结构（四态、一步一
+//! 调用、工具结算后开新步），并提供两条执行路径——[`AgentLoop::new`] 的本地自驱，
+//! 与 [`AgentLoop::with_runtime`] 的 `Runtime` 驱动（历史落在**会话**上、工具由
+//! `Runtime` 结算）。
 
 use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 
 use crate::provider::{StepOptions, ToolChoice};
-use crate::schema::{EventKind, Mode};
+use crate::runtime::WriteLedger;
+use crate::schema::EventKind;
 
 use super::guard::CallOutcome;
 use super::support::tool_result;
 use super::types::{LoopOutcome, LoopStatus, MAX_STEPS_PROMPT};
-use super::AgentLoop;
-
-/// 交付物意图关键词（卡面冻结：创建/写入/修改）。
-///
-/// **与 `runtime/turns.rs` 的同名表重复**：Runtime 侧那份属 `run_turn` 私有实现，
-/// 本层无法改为依赖（见 `docs/loop-adapter-status.md` 缺口 B3），故两处并存；
-/// 本卡判明二者不会在同一回合各提醒一次（本层 `run()` 不与 `run_turn` 同时驱动），
-/// 故按卡面「若…会导致同一回合提醒两次才删」的条件**保留**本层这份。
-pub(super) const DELIVERABLE_KEYWORDS: [&str; 3] = ["创建", "写入", "修改"];
-
-/// 交付物提醒文案（与 `runtime/turns.rs` 的 `DELIVERABLE_REMINDER_NOTE` 逐字一致）。
-const DELIVERABLE_REMINDER_NOTE: &str =
-    "尚未调用任何写/执行工具：请实际执行并给出交付物，不要声称已完成。";
+use super::{AgentLoop, Driver};
 
 /// 一步原语的返回：`(走向, 本步文本, 本步最后一个工具请求的 (id, name))`。
 ///
@@ -56,19 +45,22 @@ enum StepFlow {
     FatalDenied { tool: String },
 }
 
-/// 回合历史的**唯一组装口**。
+/// 本地路径（[`Driver::Local`]）回合历史的**唯一组装口**。
 ///
-/// 本层的 provider 请求不再由散落各处的 `messages.push` 直接产出，而是先经本结构
-/// 落成一条条带角色的历史条目、再由 [`History::request`] 一次性派生「本次请求」。
+/// provider 请求不再由散落各处的 `messages.push` 直接产出，而是先经本结构落成
+/// 一条条带角色的历史条目、再由 [`History::request`] 一次性派生「本次请求」。
 /// 缴械步的 [`MAX_STEPS_PROMPT`] 副本也收敛在此（它不进历史，只进请求），
 /// 与金标 `llm.ts` 在 `runStep` 组 transcript 时注入的位置一致。
-struct History {
+///
+/// [`Driver::Runtime`] 路径**不用**本结构：那条路径的历史容器就是会话本身，
+/// [`AgentLoop::load_step`] 每步从 `runtime.get_session(id).messages` 重读。
+pub(super) struct History {
     entries: Vec<Value>,
 }
 
 impl History {
     /// 回合起始历史：系统消息（模式模板 + 全模式硬规则）+ 本轮用户输入。
-    fn start(template: &str, user_input: &str) -> Self {
+    pub(super) fn start(template: &str, user_input: &str) -> Self {
         Self {
             entries: vec![
                 json!({
@@ -81,24 +73,30 @@ impl History {
     }
 
     /// assistant 文本落地（模型确实产出的内容进历史；空文本不进）。
-    fn push_assistant(&mut self, text: &str) {
+    pub(super) fn push_assistant(&mut self, text: &str) {
         self.entries
             .push(json!({"role": "assistant", "content": text}));
     }
 
     /// 交付物提醒注记落地（作为 user 注记进历史，与既有行为一致）。
-    fn push_user_note(&mut self, note: &str) {
+    pub(super) fn push_user_note(&mut self, note: &str) {
         self.entries.push(json!({"role": "user", "content": note}));
     }
 
     /// 工具结果落地。
-    fn push_tool_result(&mut self, id: &str, name: &str, result: &Value, is_error: bool) {
+    pub(super) fn push_tool_result(
+        &mut self,
+        id: &str,
+        name: &str,
+        result: &Value,
+        is_error: bool,
+    ) {
         self.entries.push(tool_result(id, name, result, is_error));
     }
 
     /// 本次 provider 请求 = 当前历史；缴械步在末尾临时追加 [`MAX_STEPS_PROMPT`]
     /// 的 assistant 副本（**不进历史**——它不是真实产出，只为让 provider 收口总结）。
-    fn request(&self, surrender: bool) -> Vec<Value> {
+    pub(super) fn request(&self, surrender: bool) -> Vec<Value> {
         let mut request = self.entries.clone();
         if surrender {
             request.push(json!({ "role": "assistant", "content": MAX_STEPS_PROMPT }));
@@ -110,10 +108,14 @@ impl History {
 impl<'a> AgentLoop<'a> {
     /// 跑一个完整回合序列。
     ///
-    /// 外层只推进步（对齐金标 `llm.ts` 的 `drain` while）：每步经 [`History`]
-    /// 组装请求，[`AgentLoop::drive_step`] 执行一步并返回 [`StepFlow`]，本函数
-    /// 据走向收口。公开签名与 `LoopOutcome` 形状保持不变。
+    /// 外层只推进步（对齐金标 `llm.ts` 的 `drain` while）：每步先
+    /// [`AgentLoop::load_step`] **重读**本轮请求（本地路径重读组装口，`Runtime`
+    /// 路径重读会话消息），再 [`AgentLoop::drive_step`] 执行一步并返回 [`StepFlow`]，
+    /// 本函数据走向收口。公开签名与 `LoopOutcome` 形状保持不变。
     pub fn run(&mut self, user_input: &str) -> Result<LoopOutcome, String> {
+        // `Runtime` 路径：本轮输入先落会话——历史容器即会话，用户的这条消息也是
+        // 历史的一部分（系统提示由 Runtime 组上下文时按会话模式生成）。本地路径无操作。
+        self.begin_turn(user_input)?;
         let mut history = History::start(self.policy.template, user_input);
         let mut tool_defs = self.tool_defs();
         let mut steps = 0usize;
@@ -126,12 +128,10 @@ impl<'a> AgentLoop<'a> {
                 return self.run_surrender_step(&history, &tool_defs, steps, final_text);
             }
 
-            let (flow, text, last_call) = self.drive_step(
-                &history.request(false),
-                &tool_defs,
-                &mut denied_tools,
-                &mut history,
-            )?;
+            // 每步从历史真相源**重新派生**请求（本地路径=组装口；Runtime 路径=会话）。
+            let request = self.load_step(&history, false)?;
+            let (flow, text, last_call) =
+                self.drive_step(&request, &tool_defs, &mut denied_tools, &mut history)?;
             steps += 1;
             if let Some(text) = text {
                 final_text = text;
@@ -142,11 +142,10 @@ impl<'a> AgentLoop<'a> {
                 StepFlow::Converged => {
                     if self.needs_reminder(user_input) {
                         self.reminder_used = true;
-                        self.emit(
-                            EventKind::Thinking.as_str(),
-                            json!({ "reminder": DELIVERABLE_REMINDER_NOTE }),
-                        );
-                        history.push_user_note(DELIVERABLE_REMINDER_NOTE);
+                        let note = self.reminder_note();
+                        self.emit(EventKind::Thinking.as_str(), json!({ "reminder": note }));
+                        self.append_user_note(note)?;
+                        history.push_user_note(note);
                         continue;
                     }
                     self.emit(
@@ -211,11 +210,13 @@ impl<'a> AgentLoop<'a> {
         denied_tools: &mut BTreeSet<String>,
         history: &mut History,
     ) -> Result<StepReport, String> {
-        let turn = self.provider.chat(request, tool_defs)?;
+        let turn = self.chat(request, tool_defs, None)?;
         let text = if turn.text.is_empty() {
             None
         } else {
             self.emit(EventKind::Text.as_str(), json!({"text": turn.text}));
+            // `Runtime` 路径：assistant 文本落会话；本地路径无操作（组装口负责）。
+            self.append_assistant(&turn.text)?;
             history.push_assistant(&turn.text);
             Some(turn.text.clone())
         };
@@ -251,6 +252,20 @@ impl<'a> AgentLoop<'a> {
                         json!({"id": call.id, "name": call.name, "result": result, "isError": is_error}),
                     );
                 }
+                // `Runtime` 路径：结果已由 Runtime 结算进会话（本层不再写历史），
+                // 本层只补发既有形状的事件。
+                CallOutcome::RuntimeSettled(settled) => {
+                    self.record_write(&call.name, &settled);
+                    self.emit(
+                        EventKind::ToolResult.as_str(),
+                        json!({
+                            "id": call.id,
+                            "name": call.name,
+                            "result": settled.preview,
+                            "isError": settled.is_error,
+                        }),
+                    );
+                }
             }
         }
         Ok((StepFlow::ToolSettled, text, last_call))
@@ -270,12 +285,13 @@ impl<'a> AgentLoop<'a> {
         mut steps: usize,
         mut final_text: String,
     ) -> Result<LoopOutcome, String> {
-        let turn = self.provider.chat_with_options(
-            &history.request(true),
+        let request = self.load_step(history, true)?;
+        let turn = self.chat(
+            &request,
             tool_defs,
-            &StepOptions {
+            Some(&StepOptions {
                 tool_choice: ToolChoice::None,
-            },
+            }),
         )?;
         steps += 1;
         if !turn.text.is_empty() {
@@ -312,10 +328,41 @@ impl<'a> AgentLoop<'a> {
     }
 
     /// 交付物提醒：仅 Craft/Expert、任务文本含写意图、且从未成功调用写/执行工具。
+    ///
+    /// 两条路径问的是**同一份规则**（缺口 B3）：判定与关键词表只有
+    /// [`Runtime::should_remind`](crate::runtime::Runtime::should_remind) 一处，
+    /// 本地路径自持记账位、`Runtime` 路径从会话读回记账位，都经它判定。
+    ///
+    /// 模式取**本层**的当前模式：`plan.exit` 批准会把本层的模式切到 Craft，而会话
+    /// 上的模式是建会话时定的、本层驱动期间没有回写（第三处缺口，见
+    /// `docs/loop-adapter-status.md`）。
     fn needs_reminder(&self, user_input: &str) -> bool {
-        !self.reminder_used
-            && !self.write_called
-            && matches!(self.mode, Mode::Craft | Mode::Expert)
-            && DELIVERABLE_KEYWORDS.iter().any(|k| user_input.contains(k))
+        let write = WriteLedger {
+            write_executed: self.write_called,
+            reminder_used: self.reminder_used,
+        };
+        match &self.driver {
+            // 本地路径无 `Runtime` 句柄，直接调同一份**纯函数**规则（单一来源，
+            // 非复刻：关键词表与判定都在 `runtime::deliverable_reminder` 一处）。
+            Driver::Local { .. } => {
+                crate::runtime::deliverable_reminder(self.mode, user_input, write)
+            }
+            Driver::Runtime { runtime, .. } => runtime.should_remind(self.mode, user_input, write),
+        }
+    }
+
+    /// 交付物提醒文案（**单一来源**：两条路径都取 Runtime 那一份常量）。
+    fn reminder_note(&self) -> &'static str {
+        match &self.driver {
+            Driver::Local { .. } => crate::runtime::DELIVERABLE_REMINDER_NOTE,
+            Driver::Runtime { runtime, .. } => runtime.deliverable_reminder_note(),
+        }
+    }
+
+    /// 结算记账：把一次由 Runtime 结算的调用并进本层的写/执行记账位。
+    fn record_write(&mut self, name: &str, settled: &super::guard::Settled) {
+        if settled.write_called && super::support::is_write_tool(name) {
+            self.write_called = true;
+        }
     }
 }

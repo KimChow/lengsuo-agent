@@ -136,10 +136,15 @@ mod execute;
 mod internals;
 mod sessions;
 mod tasks;
+mod tool_result;
 mod turns;
 
 pub use tasks::{Task, TaskStatus};
 pub use turns::StepOutcome;
+// 交付物提醒的单一来源（缺口 B3）：`loop` 层经 `crate::runtime::…` 取用关键词表、
+// 文案与记账位；三者皆为 `pub(crate)`，故 re-export 也必须是 `pub(crate) use`
+// （`pub use` 暴露 crate 外项会报 E0364）。
+pub(crate) use turns::{deliverable_reminder, WriteLedger, DELIVERABLE_REMINDER_NOTE};
 
 pub(super) fn narrow(text: &str, chars: usize) -> String {
     let mut out: String = text.chars().take(chars).collect();
