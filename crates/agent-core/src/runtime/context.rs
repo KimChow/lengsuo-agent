@@ -5,6 +5,9 @@
 //!   （AI 名/用户称呼/人格，agent-memory 身份层不受跨会话记忆开关限制）、工作区、
 //!   确定性日期文本、以及**已启用**时的记忆摘要；
 //! - `history`：会话已有消息（时间序），本轮输入在其后单独作为 `user_text`；
+//!   进上下文过两道闸：先逐条收窄（`HISTORY_MESSAGE_CHARS`），再按总预算裁剪
+//!   （`fit_history`：超 `HISTORY_TOTAL_CHARS` 从最旧整组丢弃，工具调用与结果
+//!   同组同进退，最新一条永不丢；对齐 opencode 上下文重建/裁剪的确定性口径）；
 //! - `memory_digest`：`memory.enabled` 关闭时为 `None`，Composer 不留空段。
 //!
 //! 隐私（AGENTS §6）：进入上下文的任何文本先过脱敏器；凭据不进模型输入。
@@ -12,11 +15,17 @@
 //! 记忆新鲜度：开启记忆的每个回合都重新组装摘要，不信任建会话时的 `session`
 //! 快照（见 [`Runtime::turn_memory_digest`]），否则本会话内的显式记忆写入永不生效。
 
+use std::ops::Range;
+
 use super::*;
+use crate::schema::Role;
 use agent_prompts::{Composer, PromptMode, PromptVars};
 
 /// 历史消息进上下文前的字符上限（防单条大输出顶爆模型输入；大结果走 result_ref）。
 const HISTORY_MESSAGE_CHARS: usize = 2000;
+
+/// 历史总预算（字符口径）：逐条收窄后仍超 ⇒ 从最旧整组丢弃（见 [`fit_history`]）。
+const HISTORY_TOTAL_CHARS: usize = 24_000;
 
 impl Runtime {
     /// 构造本轮上下文。`history` 是本轮输入推入之前的历史快照。
@@ -34,7 +43,7 @@ impl Runtime {
             mode: session.mode,
             system_prompt,
             memory_digest: digest,
-            history: narrow_history(history),
+            history: fit_history(&narrow_history(history)),
             user_text: self.redact(user_text),
         }
     }
@@ -117,6 +126,75 @@ fn narrow_history(messages: &[Message]) -> Vec<Message> {
         message.content = narrow(&redact_static(&message.content), HISTORY_MESSAGE_CHARS);
     }
     history
+}
+
+/// 第二道闸：总预算裁剪（对齐 opencode `compaction.ts` 的确定性丢弃核心）。
+///
+/// 输入应为已过第一道闸 [`narrow_history`] 的历史。超 [`HISTORY_TOTAL_CHARS`] ⇒
+/// **从最旧整组丢弃**，直到保留后缀不超预算：
+/// - 组 = 一段不可拆分的完整对话：连续 `ToolCall`/`ToolResult` 消息为一组
+///   （调用与其结果同进退，绝不拆散），其余消息各自成组；
+/// - 最新一组永不丢（对齐参考件 `recentStart` 的 `min(oldestToDrop(…), len-1)` 帽）：
+///   即使它单独超预算也只保留第一道闸的逐条收窄形态；
+/// - 允许裁到空（仅空输入），不伪造占位消息、不新增 Role。
+///
+/// 纯函数：不读时钟/环境变量、不依赖 Runtime 状态，同输入同输出。
+fn fit_history(messages: &[Message]) -> Vec<Message> {
+    if messages.is_empty() {
+        return Vec::new();
+    }
+    let groups = tool_groups(messages);
+    let sizes: Vec<usize> = groups.iter().map(|g| group_chars(messages, g)).collect();
+    let dropped = oldest_to_drop(&sizes, HISTORY_TOTAL_CHARS).min(groups.len() - 1);
+    messages[groups[dropped].start..].to_vec()
+}
+
+/// 历史分组：连续 `ToolCall`/`ToolResult` 消息为一个不可拆分组，其余每条自成一组。
+///
+/// 参考件以「user 边界」保证调用与结果同进退（`recentStart` 的 userBoundary /
+/// `flattenAndDropOldest` 的 exchange）；本仓 ToolCall/ToolResult 是顶层消息，
+/// 对应的不可拆分单位即相邻工具消息段（判定依据见卡面）。
+fn tool_groups(messages: &[Message]) -> Vec<Range<usize>> {
+    let mut groups = Vec::new();
+    let mut start = 0;
+    for i in 1..=messages.len() {
+        let splits = i == messages.len()
+            || !(is_tool_message(&messages[i - 1]) && is_tool_message(&messages[i]));
+        if splits {
+            groups.push(start..i);
+            start = i;
+        }
+    }
+    groups
+}
+
+fn is_tool_message(message: &Message) -> bool {
+    matches!(message.role, Role::ToolCall | Role::ToolResult)
+}
+
+/// 组的字符量（口径与逐条收窄一致：`content` 字符数求和）。
+fn group_chars(messages: &[Message], group: &Range<usize>) -> usize {
+    messages[group.start..group.end]
+        .iter()
+        .map(|m| m.content.chars().count())
+        .sum()
+}
+
+/// 逐字对齐 opencode `compaction.ts` 的 `oldestToDrop`：从最新端向旧端累加尺寸，
+/// 返回需从最旧端丢弃的组数，使保留后缀的总字符 ≤ 预算（恰好等于预算仍保留，
+/// 严格大于才停）。组内顺序、组间时间序均不变。
+fn oldest_to_drop(sizes: &[usize], budget: usize) -> usize {
+    let mut total = 0;
+    let mut start = sizes.len();
+    while start > 0 {
+        let next = total + sizes[start - 1];
+        if next > budget {
+            break;
+        }
+        total = next;
+        start -= 1;
+    }
+    start
 }
 
 /// 无 Runtime 句柄处的脱敏（历史收窄用同一 v0 规则集）。
