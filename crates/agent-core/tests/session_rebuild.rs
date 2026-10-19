@@ -1,19 +1,15 @@
 //! 启动时从事件日志重建会话消息历史（W1-core）：读侧投影。
 //!
 //! 语义出处：金标 opencode `packages/core/src/session/history.ts`（`messageEntries`
-//! 按 `seq` 升序读出会话消息行、逐行 `decodeMessageRow` 解码、坏行跳过）与
+//! 按 `seq` 升序读出会话消息行、逐行解码、坏行跳过）与
 //! `packages/core/src/session/projector.ts`（durable 事件是权威，消息行是它的投影）。
-//! 本仓把这条读侧链路落到 `RuntimeBuilder::build` 的启动回放：进程重启后按事件
-//! seq 重放 `user` / `text` / `tool_use` / `tool_result` 四类事件，逐条重建
-//! `Session.messages`；其余 kind 与坏事件跳过并计数，不得让运行时起不来。
+//! 映射表、分页坑、坏事件策略与 `args_ref` 缺口见 `docs/session-rebuild-status.md`。
 //!
-//! 覆盖（对应卡面 6 例）：
-//! 1. 无工具回合后重启 ⇒ 消息逐条相等（role / content / ts_ms）；
-//! 2. 工具回合后重启 ⇒ ToolCall + ToolResult 成对保留（`args_ref` 为 None 的显式断言）；
-//! 3. 提醒回合 ⇒ 重启后顺序 user / assistant / user / assistant；
-//! 4. 旧日志缺 `user` 事件 ⇒ 只重建可还原部分，不 panic；
-//! 5. 畸形 payload ⇒ 跳过该条，其余正常重建；
-//! 6. `last_seq` 与重启前一致，且重建后继续 `send_text` 接在历史之后。
+//! 覆盖（对应卡面 6 例）：无工具回合重启逐条相等；工具回合 ToolCall/ToolResult 成对
+//! 保留（`args_ref` 为 None 的显式断言）；提醒回合顺序 user/assistant/user/assistant；
+//! 旧日志缺 `user` 事件只还原可还原部分；畸形 payload 跳过该条；`last_seq` 一致且
+//! 重建后继续 `send_text` 接在历史之后。另加：分页取全量、只读、大输出 preview、
+//! 非消息 kind 不投影共 4 例（合计 10 例）。
 
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -85,6 +81,19 @@ impl Provider for ScriptedProvider {
     ) -> Result<Vec<ProviderStep>, CoreError> {
         self.serve(context)
     }
+}
+
+/// 建一个属于固定隔离主体的会话（重启对比用同一 workdir）。
+fn create(rt: &Runtime, mode: Mode) -> Session {
+    rt.create_session(&CreateSession {
+        title: "会话重建".into(),
+        workspace_root: Some(rt.workdir().display().to_string()),
+        mode,
+        permission_mode: PermissionMode::Full,
+        env_binding: None,
+        isolation: isolation(),
+    })
+    .expect("create session")
 }
 
 fn text_step(text: &str) -> Vec<ProviderStep> {
@@ -175,17 +184,46 @@ fn isolation() -> Isolation {
     }
 }
 
-fn create(rt: &Runtime, mode: Mode) -> Session {
-    rt.create_session(&CreateSession {
-        title: "会话重建".into(),
-        workspace_root: Some(rt.workdir().display().to_string()),
-        mode,
-        permission_mode: PermissionMode::Full,
-        env_binding: None,
-        isolation: isolation(),
-    })
-    .expect("create session")
+/// 手写一份旧格式日志（header + 逐行事件），供绕过运行期的重建用例使用。
+fn write_log(dir: &std::path::Path, sid: Uuid, lines: &[String]) {
+    // 日志目录由 `JsonlEventLog::new` 在真实运行时创建；测试直接手写文件，
+    // 因此由本辅助函数保证父目录存在（不许每个用例各自记得建一次）。
+    let events = dir.join("events");
+    std::fs::create_dir_all(&events).expect("events dir");
+    std::fs::write(
+        events.join(format!("events-{sid}.jsonl")),
+        lines.join("\n") + "\n",
+    )
+    .expect("write log");
 }
+
+/// 日志 header 行（`kind: "header"`，不入事件序列）。
+fn header_line(sid: Uuid) -> String {
+    format!(r#"{{"schemaVersion":1,"kind":"header","sessionId":"{sid}"}}"#)
+}
+
+/// 原始日志行（跳过 header）。
+fn log_events(dir: &std::path::Path, id: Uuid) -> Vec<Value> {
+    std::fs::read_to_string(dir.join("events").join(format!("events-{id}.jsonl")))
+        .expect("read log")
+        .lines()
+        .skip(1)
+        .map(|l| serde_json::from_str::<Value>(l).expect("json line"))
+        .collect()
+}
+
+/// 会话日志里四类**可投影**事件的 `ts_ms`（seq 升序，`replay` 返回即升序）；
+/// 其余 kind（`session_update` / `done` 等）不产出消息，不在对比之列。
+fn projected_event_timestamps(dir: &std::path::Path, id: Uuid) -> Vec<u64> {
+    log_events(dir, id)
+        .iter()
+        .filter(|e| PROJECTED_KINDS.contains(&e["kind"].as_str().expect("kind")))
+        .map(|e| e["tsMs"].as_u64().expect("tsMs"))
+        .collect()
+}
+
+/// 四类可投影事件 kind（其余不产出消息行）。
+const PROJECTED_KINDS: [&str; 4] = ["user", "text", "tool_use", "tool_result"];
 
 /// 消息的可重建投影（role / content / ts_ms；`tool` 单独断言）。
 fn shape(messages: &[Message]) -> Vec<(Role, String, u64)> {
@@ -234,13 +272,9 @@ fn plain_turn_survives_restart() {
         rt.send_text(s.id, "你好").expect("turn");
         rt.get_session(s.id).expect("session")
     };
-    let expected = [
-        (Role::User, "你好".to_string()),
-        (Role::Assistant, "重启后应答".to_string()),
-    ];
     assert_eq!(
         before.messages.iter().map(|m| m.role).collect::<Vec<_>>(),
-        expected.iter().map(|(r, _)| *r).collect::<Vec<_>>(),
+        vec![Role::User, Role::Assistant],
         "前置：重启前历史形状"
     );
 
@@ -251,6 +285,32 @@ fn plain_turn_survives_restart() {
         shape(&before.messages),
         "重启后消息必须与重启前逐条相等（role / content / ts_ms）"
     );
+    // `ts_ms` 来源（既有语义，本卡不改）：运行期消息用内存打点 `now_ms()`，事件用
+    // `EventLog::append` 自己的打点——同一毫秒级上下文但不是同一次时钟读数。重建
+    // 一律取事件 `ts_ms`，故前置断言为「事件打点」，并另断两者同毫秒级。
+    let event_ts = projected_event_timestamps(&dir, before.id);
+    assert_eq!(
+        restored.messages.len(),
+        event_ts.len(),
+        "事件条数与消息条数一致"
+    );
+    for (message, ts) in restored.messages.iter().zip(event_ts.iter()) {
+        assert_eq!(
+            message.ts_ms, *ts,
+            "重建的 ts_ms 取事件打点（{}，非内存消息打点）",
+            message.content
+        );
+    }
+    for message in &before.messages {
+        assert!(
+            restored
+                .messages
+                .iter()
+                .any(|m| m.ts_ms >= message.ts_ms && m.ts_ms - message.ts_ms <= 5),
+            "重建 ts_ms 与重启前内存打点同毫秒级上下文: {}",
+            message.content
+        );
+    }
 }
 
 /// 例 2：工具回合后重启 ⇒ ToolCall + ToolResult 成对保留，`ToolResult.content`
@@ -298,18 +358,8 @@ fn tool_turn_rebuilds_paired_call_and_result() {
         .iter()
         .filter(|m| m.role == Role::ToolResult)
         .collect();
-    assert_eq!(
-        rebuilt_calls.len(),
-        1,
-        "ToolCall 必须重建: {:?}",
-        restored.messages
-    );
-    assert_eq!(
-        rebuilt_results.len(),
-        1,
-        "ToolResult 必须重建: {:?}",
-        restored.messages
-    );
+    let (c, r) = (rebuilt_calls.len(), rebuilt_results.len());
+    assert_eq!((c, r), (1, 1), "成对重建: {:?}", restored.messages);
     assert_eq!(
         tool_of(rebuilt_calls[0]).name,
         "fs.read",
@@ -377,10 +427,8 @@ fn legacy_log_without_user_events_rebuilds_partial_history() {
     let dir = workdir("legacy");
     // 直接手写旧格式日志：只有 `text` 事件（本卡之前的日志没有 `user` 事件）。
     let sid = Uuid::new_v4();
-    let events = dir.join("events");
-    std::fs::create_dir_all(&events).expect("events dir");
     let lines = [
-        format!(r#"{{"schemaVersion":1,"kind":"header","sessionId":"{sid}"}}"#),
+        header_line(sid),
         format!(
             r#"{{"seq":1,"sessionId":"{sid}","kind":"session_update","payload":{{"status":"idle","title":"旧会话","mode":"ask"}},"tsMs":10}}"#
         ),
@@ -391,11 +439,7 @@ fn legacy_log_without_user_events_rebuilds_partial_history() {
             r#"{{"seq":3,"sessionId":"{sid}","kind":"text","payload":{{"text":"旧回复二"}},"tsMs":30}}"#
         ),
     ];
-    std::fs::write(
-        events.join(format!("events-{sid}.jsonl")),
-        lines.join("\n") + "\n",
-    )
-    .expect("write legacy log");
+    write_log(&dir, sid, &lines);
 
     let rt = reopen(&dir, scripted(0));
     let restored = rt.get_session(sid).expect("旧会话必须被启动回放认出来");
@@ -416,10 +460,8 @@ fn legacy_log_without_user_events_rebuilds_partial_history() {
 fn malformed_payloads_are_skipped_without_aborting_startup() {
     let dir = workdir("malformed");
     let sid = Uuid::new_v4();
-    let events = dir.join("events");
-    std::fs::create_dir_all(&events).expect("events dir");
     let lines = [
-        format!(r#"{{"schemaVersion":1,"kind":"header","sessionId":"{sid}"}}"#),
+        header_line(sid),
         format!(
             r#"{{"seq":1,"sessionId":"{sid}","kind":"user","payload":{{"text":"正常用户"}},"tsMs":10}}"#
         ),
@@ -436,11 +478,7 @@ fn malformed_payloads_are_skipped_without_aborting_startup() {
             r#"{{"seq":5,"sessionId":"{sid}","kind":"tool_result","payload":{{"name":"fs.read","preview":"ok","resultRef":"blob-1"}},"tsMs":50}}"#
         ),
     ];
-    std::fs::write(
-        events.join(format!("events-{sid}.jsonl")),
-        lines.join("\n") + "\n",
-    )
-    .expect("write malformed log");
+    write_log(&dir, sid, &lines);
 
     let rt = reopen(&dir, scripted(0));
     let restored = rt.get_session(sid).expect("坏事件不得让运行时起不来");
@@ -569,16 +607,7 @@ fn rebuild_writes_no_events() {
     };
     let log_seq_before = before.last_seq;
     let _after = reopen(&dir, scripted(0));
-    let raw = std::fs::read_to_string(
-        dir.join("events")
-            .join(format!("events-{}.jsonl", before.id)),
-    )
-    .expect("read log");
-    let events: Vec<Value> = raw
-        .lines()
-        .skip(1)
-        .map(|l| serde_json::from_str(l).expect("json line"))
-        .collect();
+    let events = log_events(&dir, before.id);
     assert_eq!(
         events.len() as u64,
         log_seq_before,
