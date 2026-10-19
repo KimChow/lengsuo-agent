@@ -125,9 +125,15 @@ impl Drop for GatewayHandle {
         remove_handshake(&self.path, &self.token);
     }
 }
-#[cfg_attr(not(unix), allow(unused_variables))]
+// Windows 握手实现：纯构造层全平台编译（Linux 可单测），windows-sys FFI 仅 cfg(windows)。
+// `#[path]` 让模块文件按本卡约定落在 src/handshake_windows.rs；非 Windows 上其条目只被
+// cfg(windows) 侧消费，故豁免 dead_code。
+#[cfg_attr(not(windows), allow(dead_code))]
+#[path = "handshake_windows.rs"]
+mod handshake_windows;
+#[cfg_attr(not(any(unix, windows)), allow(unused_variables))]
 fn write_handshake(path: &Path, port: u16, token: &str) -> std::io::Result<()> {
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     return Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "private handshake ACL not yet verified on this platform",
@@ -150,6 +156,10 @@ fn write_handshake(path: &Path, port: u16, token: &str) -> std::io::Result<()> {
             return Err(e);
         }
         Ok(())
+    }
+    #[cfg(windows)]
+    {
+        handshake_windows::write_private_handshake(path, port, token)
     }
 }
 fn remove_handshake(path: &Path, token: &str) {
