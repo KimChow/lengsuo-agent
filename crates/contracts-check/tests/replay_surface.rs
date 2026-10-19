@@ -1,5 +1,5 @@
 //! `session:replay` 的**语义**契约：半开区间 `(afterSeq, …]`、`limit` 夹取、
-//! `lastSeq` 回退、未知会话返空、未注册动作 404。
+//! `lastSeq` 回退、未知会话 404、未注册动作 404。
 //!
 //! 动作面卡（`action_surface.rs`）只保证 `session:replay`「被路由到、不是 404」；
 //! 本文件补上 `afterSeq` / `limit` / `lastSeq` / 返回键名的**可执行语义断言**。
@@ -225,13 +225,15 @@ async fn success_data_has_frozen_replay_keys() {
     g.shutdown().await.unwrap();
 }
 
-/// 未知会话回放：按本卡冻结语义应为**空页 + `code==0`**（非错误）。
+/// 未知会话回放：与 `session:get/send/stop` 同口径，**信封 `404`**（不是空页）。
 ///
-/// ⚠ 实现与本文档语义不一致，本用例**故意如实红掉**，作为「可执行的偏离证据」。
-/// 详见报告「偏离清单」第 1 条：网关 `own()` 先做归属/存在性校验，
-/// 未知会话落 `SessionNotFound` → 信封 `404`，而非 `agent-core` 层的「返空」。
+/// 网关 `own()` 先做存在性 + 归属校验（`agent-gateway/src/rpc.rs:66`），
+/// 未知 `id` 落 `SessionNotFound` → `core()` 映射为 `404 "not found"`，
+/// **早于** `agent-core` 层 `replay()` 的「未知会话 404 Vec」分支。
+/// 既有回归锚 `agent-gateway/tests/replay_rpc.rs::replay_of_unknown_session_is_not_found`
+/// 断言同一行为；本条与之对齐，防止两侧口径漂移。
 #[tokio::test]
-async fn replay_of_unknown_session_returns_empty_page_not_error() {
+async fn replay_of_unknown_session_is_not_found() {
     let (g, _dir) = start_gateway().await;
     // 合法 v4 形态、但绝未创建过的 id：不引入 `uuid` 依赖（`Cargo.toml`/`Cargo.lock`
     // 属共享区不可改），用固定的合法字面量；网关只要求 `Uuid::parse_str` 成功。
@@ -239,13 +241,16 @@ async fn replay_of_unknown_session_returns_empty_page_not_error() {
 
     let env = replay(&g, json!({"id": unknown, "afterSeq": 0})).await;
     assert_eq!(
-        env["code"], 0,
-        "未知会话按冻结语义应返空页而非报错（实测见偏离清单）: {env}"
+        env["code"], 404,
+        "未知会话应先被 `own()` 的存在性校验拦下，返 404 而非空页: {env}"
+    );
+    assert!(
+        env["data"].is_null(),
+        "错误信封的 `data` 应为 null（不回显内部状态）: {env}"
     );
     assert_eq!(
-        seqs(&env),
-        Vec::<u64>::new(),
-        "未知会话应返回空 events: {env}"
+        env["msg"], "not found",
+        "错误文案应与 `session:get/send/stop` 的 `own()` 口径一致: {env}"
     );
 
     g.shutdown().await.unwrap();
