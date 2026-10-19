@@ -20,11 +20,27 @@ const REPLAY_DEFAULT_LIMIT: u64 = 200;
 /// - **默认不启用**：`App` 的 `acp` 字段为 `None`（默认）时，本表**完全不生效**，
 ///   既有 11 个动作的实现路径逐字节不变（零回归）；
 /// - **不发明映射**：表里的名字即 v0 冻结动作名，转发时**原样**当 ACP method
-///   （见 `crates/agent-gateway/src/acp.rs` 的 `forward_action`），不做名字改写；
+///   （见 `crates/agent-gateway/src/acp.rs` 的 `forward_action`），
+///   **不做任何名字改写**——不发明 `域:动作` ↔ `session/*` 映射表；
 /// - 本表是**显式**的，故「哪些动作走 ACP」由部署时拍板，不静默改变既有语义。
 ///
-/// 当前为空：本卡只落地**机制**，首个可切换动作由后续卡在方法面台账冻结后填入。
-pub const ACP_FORWARD_ACTIONS: &[&str] = &[];
+/// # 初步白名单（本卡落地）
+///
+/// 只放 `sys:ping`，理由是它是「**接线真的通**」的最小、最低风险可验证样本：
+/// - **无副作用**：既有实现只回 `{"pid": …}`，纯读、不碰会话/配置/审批状态，
+///   即便转发语义日后调整也不产生持久影响；
+/// - **可判读**：应答一眼可辨真伪（对端回的载荷与既有实现不同即证明走了 ACP），
+///   是「挂 handle ⇒ 旁路生效」这条链路的端到端探针
+///   （见 `tests/acp_forward_whitelist.rs`）。
+///
+/// **其余 10 个动作本卡不动**（为何暂不放）：它们要么**改状态**、要么**带归属/
+/// 审批校验**——`session:create/get/send/stop/replay` 涉及会话生命周期与隔离归属，
+/// `approval:respond` 涉及安全决策，`config:set` 改运行配置，`tool:list` 受
+/// permission gate 过滤——一旦原样转发给 ACP method，等于把这些语义**整体搬到对端**，
+/// 而「哪些动作该搬、对端如何复刻同样的校验」需先有**方法面台账**（见
+/// `docs/contracts/acp-host.md` §7 决策项 2）。KICKOFF 的「只增不改」也要求
+/// 逐个评估、而非一次性切走。故本卡只放无副作用的探针动作，留口子给后续卡。
+pub const ACP_FORWARD_ACTIONS: &[&str] = &["sys:ping"];
 
 #[derive(Deserialize)]
 pub(crate) struct Request {
