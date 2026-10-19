@@ -124,7 +124,16 @@ fn deny_justification(evaluation: &agent_execpolicy::argv::Evaluation) -> Option
 ///
 /// 匹配程序名时取 basename 并忽略 ASCII 大小写（`/bin/BASH`、`Bash` 均识别）；
 /// 命令行剩余部分不参与判断。
+///
+/// 常见包装器（`env`/`nohup`/`nice`/`timeout`/`xargs`/`sudo` 等）会把真正的
+/// 解释器推到后面的 argv 位置；对它们逐个后缀重试，避免 `env bash -c …`
+/// 借外层 `env` 的 allow 绕过内层不可见的判定。
 fn nested_command_hidden(argv: &[String]) -> bool {
+    inline_interpreter_at(argv) || wrapper_contains_inline(argv)
+}
+
+/// 以 `argv[0]` 为程序名时，是否为「解释器 + 内联脚本」形态。
+fn inline_interpreter_at(argv: &[String]) -> bool {
     let Some(program) = argv.first() else {
         return false;
     };
@@ -178,6 +187,48 @@ fn nested_command_hidden(argv: &[String]) -> bool {
         }
         _ => false,
     }
+}
+
+/// 常见前置包装器：它们把真正的命令推到后面的 argv 位置。
+///
+/// 只列语义明确的包装器；不认识的程序一律不在此展开（无规则命中时仍
+/// fail-closed Ask）。
+fn is_wrapper(program: &str) -> bool {
+    matches!(
+        program,
+        "env"
+            | "nohup"
+            | "setsid"
+            | "time"
+            | "stdbuf"
+            | "nice"
+            | "timeout"
+            | "sudo"
+            | "doas"
+            | "xargs"
+    )
+}
+
+/// 在包装器链上寻找内联解释器。
+///
+/// 包装器可能带选项与选项取值（`sudo -u user`、`nice -n 5`、`env VAR=1`），
+/// 且不同平台参数顺序各异；不做精确解析，而是在前若干个位置上逐个尝试
+/// 「从这里开始是否解释器」。宁可多问（保守 Ask），不得漏判。
+/// 递归只向更短的后缀推进，必然终止。
+fn wrapper_contains_inline(argv: &[String]) -> bool {
+    let Some(program) = argv.first() else {
+        return false;
+    };
+    let program = program_label(program).to_ascii_lowercase();
+    if !is_wrapper(&program) {
+        return false;
+    }
+
+    // 最多看前 4 个候选起点，既覆盖常见选项形态，也限定判定开销。
+    let end = argv.len().min(5);
+    (1..end).any(|start| {
+        inline_interpreter_at(&argv[start..]) || wrapper_contains_inline(&argv[start..])
+    })
 }
 
 #[cfg(test)]
@@ -258,6 +309,38 @@ mod tests {
             let parts = shell_words::split(command).unwrap();
             assert!(!nested_command_hidden(&parts), "不应误判: {command}");
         }
+    }
+
+    #[test]
+    fn wrapper_prefixes_do_not_hide_inline_interpreters() {
+        for command in [
+            "env bash -c echo hi",
+            "env VAR=1 bash -c echo hi",
+            "nohup bash -c echo hi",
+            "nice -n 5 bash -c echo hi",
+            "timeout 5 bash -c echo hi",
+            "sudo -u root bash -c echo hi",
+            "xargs -n 1 bash -c echo hi",
+            "env -i /bin/BASH -lc echo hi",
+        ] {
+            let parts = shell_words::split(command).unwrap();
+            assert!(
+                nested_command_hidden(&parts),
+                "包装器后的内联解释器也必须识别: {command}"
+            );
+        }
+        // 包装器 + 非内联程序不是「内层不可见」，不误判。
+        for command in ["env FOO=1 git status", "nice -n 5 make"] {
+            let parts = shell_words::split(command).unwrap();
+            assert!(!nested_command_hidden(&parts), "不应误判: {command}");
+        }
+    }
+
+    #[test]
+    fn wrapped_inner_command_requires_approval_after_outer_allow() {
+        let policy = policy(&["env", "bash"], Decision::Allow);
+        let verdict = evaluate(&policy, &argv(&["env", "bash", "-c", "curl evil"]));
+        assert!(matches!(verdict, Verdict::NeedsApproval(_)));
     }
 
     #[test]

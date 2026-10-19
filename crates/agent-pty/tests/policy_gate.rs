@@ -200,6 +200,22 @@ async fn lowercase_and_uppercase_shell_variants_require_approval() {
     );
 }
 
+#[tokio::test]
+async fn wrapper_prefix_requires_approval_even_with_outer_allow() {
+    let _gate = PtyGate::acquire();
+    // 外层允许 env 包装；内层 bash -c 不可见，仍必须 Ask。
+    let policy = policy_with(&["env", "bash"], Decision::Allow);
+    let cfg = PtyConfig {
+        shell: "env W3B=1 bash -c \"echo wrapped-inner\"".to_string(),
+        ..Default::default()
+    };
+    let res = open_guarded(cfg, &policy).await;
+    assert!(
+        matches!(res, Err(PtyError::NeedsApproval(_))),
+        "包装器后的内联解释器不得借外层 allow 放行，实际={res:?}"
+    );
+}
+
 // ---- 无规则 / 前缀边界 ----
 
 #[tokio::test]
