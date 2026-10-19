@@ -14,5 +14,7 @@ pub mod html;
 pub mod web;
 
 pub use error::ExecError;
+pub use exec::guard::{evaluate, Verdict};
+pub use exec::guarded::GuardedExec;
 pub use exec::{ExecConfig, ExecResult, ExecRunner, Shell};
 pub use web::{FetchResult, WebFetcher};
