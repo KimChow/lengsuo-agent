@@ -170,3 +170,16 @@ pub(super) fn now_ms() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or_default()
 }
+
+impl Runtime {
+    /// 一条消息的产生时刻（毫秒）。**一次调用 = 一次时钟读数**，调用方必须把这个值
+    /// **同时**用于消息的 `ts_ms` 与随后事件 payload 的 `"tsMs"`——这样「重启无损」
+    /// 才有语义：重建时直接取回消息时间真值，而不是拿「事件落盘时刻」冒充
+    /// 「消息产生时刻」（两者是相邻的两次读数，落在相邻毫秒是常态）。
+    ///
+    /// 对齐 opencode 的投影语义（`session/projector.ts` + `session/message-updater.ts`：
+    /// 消息行的时间一律来自事件自身携带的时刻，投影器从不读运行期内存）。
+    pub(super) fn turn_ts(&self) -> u64 {
+        now_ms()
+    }
+}

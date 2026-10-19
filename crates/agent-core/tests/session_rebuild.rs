@@ -27,37 +27,58 @@ fn plain_turn_survives_restart() {
         shape(&before.messages),
         "重启后消息必须与重启前逐条相等（role / content / ts_ms）"
     );
-    // `ts_ms` 来源（既有语义，本卡不改）：运行期消息用内存打点 `now_ms()`，事件用
-    // `EventLog::append` 自己的打点——同一毫秒级上下文但不是同一次时钟读数。重建
-    // 一律取事件 `ts_ms`，故前置断言为「事件打点」，并另断两者同毫秒级。
-    let event_ts = projected_event_timestamps(&dir, before.id);
+    // 重建的 `ts_ms` 取的是**事件 payload 里的 `tsMs`**（消息时间真值，生产端与消息
+    // 本身用同一次时钟读数），而不是事件自身的落盘时刻 `tsMs` 之外的东西：逐条比对
+    // payload 真值，证明重建没有拿落盘时刻冒充消息时间。
+    let projected_ts = projected_payload_tsms(&dir, before.id);
     assert_eq!(
-        restored.messages.len(),
-        event_ts.len(),
-        "事件条数与消息条数一致"
+        shape(&restored.messages)
+            .iter()
+            .map(|(_, _, ts)| *ts)
+            .collect::<Vec<_>>(),
+        projected_ts,
+        "重建的 ts_ms 必须逐条等于事件 payload.tsMs（消息时间真值）"
     );
-    for (message, ts) in restored.messages.iter().zip(event_ts.iter()) {
-        assert_eq!(
-            message.ts_ms, *ts,
-            "重建的 ts_ms 取事件打点（{}，非内存消息打点）",
-            message.content
-        );
-    }
-    for message in &before.messages {
-        assert!(
-            restored
-                .messages
-                .iter()
-                .any(|m| m.ts_ms >= message.ts_ms && m.ts_ms - message.ts_ms <= 5),
-            "重建 ts_ms 与重启前内存打点同毫秒级上下文: {}",
-            message.content
-        );
-    }
+}
+
+/// 例 1b：同一会话内**连续两轮** ⇒ 两轮消息的 ts_ms 各自独立（不是同一时刻），
+/// 重启后仍逐条相等（防「全部取同一时刻」的偷懒实现）。
+#[test]
+fn two_turns_keep_independent_timestamps_across_restart() {
+    let dir = workdir("two-turns");
+    let before = {
+        let rt = reopen(&dir, scripted(2));
+        let s = create(&rt, Mode::Quick);
+        rt.send_text(s.id, "第一轮").expect("turn 1");
+        rt.send_text(s.id, "第二轮").expect("turn 2");
+        rt.get_session(s.id).expect("session")
+    };
+    assert_eq!(before.messages.len(), 4, "前置：两轮 user/assistant");
+
+    let after = reopen(&dir, scripted(0));
+    let restored = after.get_session(before.id).expect("restored session");
+    assert_eq!(
+        shape(&restored.messages),
+        shape(&before.messages),
+        "两轮重启后逐条相等（role / content / ts_ms）"
+    );
+
+    // 重建的 ts_ms 逐条等于各自事件 payload 的 tsMs（两轮各取各的真值）。
+    let projected_ts = projected_payload_tsms(&dir, before.id);
+    assert_eq!(
+        shape(&restored.messages)
+            .iter()
+            .map(|(_, _, ts)| *ts)
+            .collect::<Vec<_>>(),
+        projected_ts,
+        "每一轮的 ts_ms 必须是该轮自己的 payload.tsMs"
+    );
+    assert_eq!(projected_ts.len(), 4, "两轮共四条可投影事件");
 }
 
 /// 例 2：工具回合后重启 ⇒ ToolCall + ToolResult 成对保留，`ToolResult.content`
-/// 为 preview、`result_ref` 与重启前一致；`ToolCall.args_ref` 为 `None`
-/// （`tool_use` 事件 payload 无 `args_ref` 的已知缺口，显式断言）。
+/// 为 preview、`result_ref` 与重启前一致；`ToolCall.args_ref` 也随 `tool_use`
+/// 事件的 `argsRef` 落盘并取回（不再是 None 缺口）。
 #[test]
 fn tool_turn_rebuilds_paired_call_and_result() {
     let dir = workdir("tool");
@@ -116,8 +137,16 @@ fn tool_turn_rebuilds_paired_call_and_result() {
             .tool
             .as_ref()
             .and_then(|t| t.args_ref.clone()),
-        None,
-        "已知缺口：`tool_use` 事件没有 args_ref，重建只能留 None"
+        calls[0].tool.as_ref().and_then(|t| t.args_ref.clone()),
+        "args_ref 随 `tool_use` 事件的 `argsRef` 落盘，重启后必须与重启前一致"
+    );
+    assert!(
+        rebuilt_calls[0]
+            .tool
+            .as_ref()
+            .and_then(|t| t.args_ref.clone())
+            .is_some(),
+        "前置：blob 写入成功时 args_ref 非空（否则上一条断言形同虚设）"
     );
     assert_eq!(
         rebuilt_results[0].content, results[0].content,
@@ -194,4 +223,53 @@ fn legacy_log_without_user_events_rebuilds_partial_history() {
         "缺 user 事件的旧日志只重建可还原部分，不伪造用户行"
     );
     assert_eq!(restored.title, "旧会话", "既有标题回放行为不变");
+}
+
+/// 例 4b：旧日志 payload **没有** `tsMs` ⇒ 仍能重建成功，`ts_ms` 回退为事件
+/// 自身的打点（`Event.ts_ms`），不 panic（守住降级门）。
+#[test]
+fn legacy_payload_without_tsms_falls_back_to_event_timestamp() {
+    let dir = workdir("legacy-tsms");
+    // 手写旧格式日志：可投影事件的 payload 里**只有**内容字段，没有 `tsMs`。
+    // 事件行自身仍带 `tsMs`（那是事件落盘时刻，本卡未改），回退即取它。
+    let sid = Uuid::new_v4();
+    let lines = [
+        header_line(sid),
+        format!(
+            r#"{{"seq":1,"sessionId":"{sid}","kind":"session_update","payload":{{"status":"idle","title":"旧时间戳","mode":"ask"}},"tsMs":10}}"#
+        ),
+        format!(
+            r#"{{"seq":2,"sessionId":"{sid}","kind":"user","payload":{{"text":"旧输入"}},"tsMs":20}}"#
+        ),
+        format!(
+            r#"{{"seq":3,"sessionId":"{sid}","kind":"text","payload":{{"text":"旧回复"}},"tsMs":30}}"#
+        ),
+        format!(
+            r#"{{"seq":4,"sessionId":"{sid}","kind":"tool_use","payload":{{"name":"fs.read","args":{{"path":"a.txt"}}}},"tsMs":40}}"#
+        ),
+        format!(
+            r#"{{"seq":5,"sessionId":"{sid}","kind":"tool_result","payload":{{"name":"fs.read","preview":"ok"}},"tsMs":50}}"#
+        ),
+    ];
+    write_log(&dir, sid, &lines);
+
+    let rt = reopen(&dir, scripted(0));
+    let restored = rt.get_session(sid).expect("旧会话必须被启动回放认出来");
+    assert_eq!(
+        shape(&restored.messages),
+        vec![
+            (Role::User, "旧输入".to_string(), 20),
+            (Role::Assistant, "旧回复".to_string(), 30),
+            // `summarize_args({"path":"a.txt"})` = "path:string"（只保留键名与值类型）。
+            (Role::ToolCall, "path:string".to_string(), 40),
+            (Role::ToolResult, "ok".to_string(), 50),
+        ],
+        "payload 无 tsMs 时回退为事件打点，逐条不 panic"
+    );
+    // 缺 `argsRef` 的旧事件同样降级为 None，而不是判坏事件。
+    assert_eq!(
+        tool_of(&restored.messages[2]).args_ref,
+        None,
+        "旧 tool_use 无 argsRef ⇒ args_ref 为 None"
+    );
 }
