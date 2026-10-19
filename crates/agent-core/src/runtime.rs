@@ -24,6 +24,7 @@ use crate::error::CoreError;
 use crate::event_log::{EventLog, JsonlEventLog};
 use crate::permission::PermissionGate;
 use crate::provider::{Provider, TurnContext};
+use crate::r#loop::ToolExecutor;
 use crate::redact::Redactor;
 use crate::schema::{Event, Isolation, Message, Mode, PermissionMode, Session, SessionStatus};
 use crate::tool::ToolRegistry;
@@ -86,6 +87,10 @@ pub struct Runtime {
     config: Arc<Mutex<RuntimeConfig>>,
     /// 会话内任务看板（task 工具族域层能力面；克隆共享，走 `*_for_session` 门）。
     tasks: Arc<Mutex<TaskBoard>>,
+    /// 工具执行器（W1 接线）：注入后工具步真实执行并结算结果；`None` 保持
+    /// pending 占位（执行由宿主承担）。`Send + Sync` 为使用点约束（trait 本体
+    /// 属 `loop` 模块，本卡不改），保证 `Runtime` 仍可跨线程共享（网关 tokio 域）。
+    executor: Option<Arc<dyn ToolExecutor + Send + Sync>>,
 }
 
 impl Runtime {
@@ -127,6 +132,7 @@ impl Runtime {
 
 mod approvals;
 mod bus;
+mod execute;
 mod internals;
 mod sessions;
 mod tasks;
