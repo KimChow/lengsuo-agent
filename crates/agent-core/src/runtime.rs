@@ -136,6 +136,7 @@ mod execute;
 mod internals;
 mod sessions;
 mod tasks;
+mod tool_result;
 mod turns;
 
 pub use tasks::{Task, TaskStatus};
