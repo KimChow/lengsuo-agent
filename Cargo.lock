@@ -59,6 +59,7 @@ dependencies = [
  "agent-execpolicy",
  "agent-memory",
  "agent-prompts",
+ "agent-tasks",
  "chrono",
  "regex",
  "serde",
