@@ -24,7 +24,9 @@ use crate::types::{
     SandboxablePreference,
 };
 
+pub mod probe;
 pub mod seccomp;
+pub mod wsl;
 
 /// bwrap 固定前缀（构造层黄金向量的锚点，禁止漂移）。
 const PREFIX: &[&str] = &[
@@ -47,24 +49,42 @@ const PREFIX: &[&str] = &[
 
 /// 探测注入面：文件系统/内核能力可替换，测试不触真实磁盘。
 pub trait SandboxProbe {
-    /// bwrap 可执行文件是否在 PATH 且可运行。
+    /// bwrap 是否真的可运行（**必须跑通最小隔离命令**，不是「PATH 里找得到」）。
     fn bwrap_available(&self) -> bool;
     /// landlock 是否可用（本卡恒 false：Landlock 路径留 TODO，不假装支持）。
     fn landlock_available(&self) -> bool;
+
+    /// 带原因的 bwrap 探测结论。
+    ///
+    /// 默认实现沿用 [`Self::bwrap_available`]，供只关心布尔面的既有注入实现继续编译；
+    /// [`SystemProbe`] 覆盖它以保留失败原因（权限不足/超时/非零退出），
+    /// `run_sandboxed_with` 也走这里，确保探测只发生一次且原因能带进审批说明。
+    fn bwrap_probe(&self) -> probe::BwrapProbe {
+        if self.bwrap_available() {
+            probe::BwrapProbe::Usable
+        } else {
+            probe::BwrapProbe::Missing
+        }
+    }
 }
 
-/// 真实系统探测。
+/// 真实系统探测：PATH 找到 bwrap 后**真实执行最小隔离命令**并验证退出状态。
+/// 只有路径存在但跑不起来（权限不足/无 user namespace/超时）时如实返回不可用，
+/// 上层因此不会据假阳性跳过审批。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemProbe;
 
 impl SandboxProbe for SystemProbe {
     fn bwrap_available(&self) -> bool {
-        find_system_bwrap_in_path().is_some()
+        self.bwrap_probe().is_usable()
     }
     fn landlock_available(&self) -> bool {
         // TODO(landlock): 探测 /sys/kernel/security/landlock 并实现降级路径。
         // 实现前返回 false：无 bwrap 时探测结果为 None（fail-closed）。
         false
+    }
+    fn bwrap_probe(&self) -> probe::BwrapProbe {
+        probe::probe_system_bwrap()
     }
 }
 
@@ -92,16 +112,45 @@ pub fn find_bwrap_in_path_with(
         .find(|candidate| is_executable(candidate))
 }
 
+/// 探测结论：能力 + 不可用原因（`None` 沙箱时原因必有值）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SandboxDetection {
+    /// 探测得到的沙箱实现；不可用时为 `None`。
+    pub sandbox: Option<SandboxType>,
+    /// 不可用原因；可用时为 `None`。
+    pub reason: Option<String>,
+}
+
+/// 降级链（注入版，带原因）：bwrap **真实跑通** → LinuxSeccomp；
+/// landlock → TODO（保持不可用）；否则不可用并保留探测原因。
+pub fn detect_sandbox_detailed_with(probe: &impl SandboxProbe) -> SandboxDetection {
+    match probe.bwrap_probe() {
+        probe::BwrapProbe::Usable => SandboxDetection {
+            sandbox: Some(SandboxType::LinuxSeccomp),
+            reason: None,
+        },
+        failure => {
+            let reason = failure
+                .reason()
+                .unwrap_or_else(|| "bwrap unavailable".to_string());
+            if probe.landlock_available() {
+                // TODO(landlock): 接入 Landlock 后端；实现前保持 None（fail-closed），不假装支持。
+                return SandboxDetection {
+                    sandbox: None,
+                    reason: Some(format!("{reason}; landlock backend not implemented")),
+                };
+            }
+            SandboxDetection {
+                sandbox: None,
+                reason: Some(reason),
+            }
+        }
+    }
+}
+
 /// 降级链（注入版）：bwrap 可用 → LinuxSeccomp；landlock → TODO（返回 None）；都无 → None。
 pub fn detect_sandbox_with(probe: &impl SandboxProbe) -> Option<SandboxType> {
-    if probe.bwrap_available() {
-        return Some(SandboxType::LinuxSeccomp);
-    }
-    if probe.landlock_available() {
-        // TODO(landlock): 接入 Landlock 后端；实现前保持 None（fail-closed），不假装支持。
-        return None;
-    }
-    None
+    detect_sandbox_detailed_with(probe).sandbox
 }
 
 /// 平台沙箱探测：Linux 下 bwrap 可用 → Some(LinuxSeccomp)，否则 None。
@@ -196,37 +245,39 @@ pub fn run_sandboxed(
 }
 
 /// 注入版分发：降级链与 preference 语义的完整实现。
+///
+/// Forbid 不额外探测（不产生探测进程）；探测失败时 Require 拒绝、Auto 按策略
+/// 转人工审批或拒绝——**没有任何分支会静默回退成非沙箱直跑**。
 pub fn run_sandboxed_with(
     probe: &impl SandboxProbe,
     spec: CommandSpec,
     pref: SandboxablePreference,
     policy: SandboxPolicy,
 ) -> Result<ExecOutcome, SandboxError> {
-    let target = match pref {
-        SandboxablePreference::Forbid => SandboxType::None,
-        _ => detect_sandbox_with(probe).unwrap_or(SandboxType::None),
-    };
-    match (pref, target) {
-        // Require + 无沙箱 → fail-closed 拒绝。
-        (SandboxablePreference::Require, SandboxType::None) => Err(SandboxError::Unavailable(
-            "no sandbox available on this platform but Require was requested".into(),
-        )),
-        // Auto + 无沙箱 → 按策略转人工审批，或拒绝。
-        (SandboxablePreference::Auto, SandboxType::None) => {
-            if policy.allow_approval_fallback {
-                Err(SandboxError::NeedsApproval(
-                    "sandbox unavailable; command must go through manual approval".into(),
-                ))
-            } else {
-                Err(SandboxError::Denied(
-                    "sandbox unavailable and approval fallback disabled".into(),
-                ))
+    // Forbid：明确不沙箱 → 非沙箱直跑（env 仍按 R8 清洗），一次探测都不发生。
+    if pref == SandboxablePreference::Forbid {
+        return run_unsandboxed(spec);
+    }
+    let detection = detect_sandbox_detailed_with(probe);
+    let Some(target) = detection.sandbox else {
+        let reason = detection
+            .reason
+            .unwrap_or_else(|| "no sandbox available on this platform".to_string());
+        // Require + 无能力 → fail-closed 拒绝。
+        // Auto + 无能力 → 按策略转人工审批，或拒绝。
+        return Err(match pref {
+            SandboxablePreference::Require => {
+                SandboxError::Unavailable(format!("{reason} but Require was requested"))
             }
-        }
-        // Forbid（或显式放行）→ 非沙箱直跑，env 仍按 R8 清洗。
-        (_, SandboxType::None) => run_unsandboxed(spec),
-        (_, SandboxType::LinuxSeccomp) => run_bwrap(spec),
-        (_, other) => Err(SandboxError::Unavailable(format!(
+            _ if policy.allow_approval_fallback => SandboxError::NeedsApproval(format!(
+                "{reason}; command must go through manual approval"
+            )),
+            _ => SandboxError::Denied(format!("{reason} and approval fallback disabled")),
+        });
+    };
+    match target {
+        SandboxType::LinuxSeccomp => run_bwrap(spec),
+        other => Err(SandboxError::Unavailable(format!(
             "{} is not a Linux sandbox backend",
             other.as_metric_tag()
         ))),

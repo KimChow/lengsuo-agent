@@ -13,12 +13,14 @@
 // 仅限 windows target、且为外部 API 调用的强制 unsafe；仓库「生产网络代码禁 unsafe」规则不受影响。
 
 mod baseline;
+mod denial;
 mod types;
 
 pub use baseline::{
     cache_roots_for_home, env_passlist, is_denied_path, CACHE_DIR_NAMES, DENY_PATH_COMPONENTS,
     ENV_PASSLIST,
 };
+pub use denial::{is_likely_executor_managed_sandbox_denied, is_likely_sandbox_denied};
 pub use types::{
     CommandSpec, ExecOutcome, ExecStatus, NetworkMode, SandboxError, SandboxPolicy, SandboxType,
     SandboxablePreference,
@@ -27,9 +29,19 @@ pub use types::{
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "linux")]
+pub use linux::probe::{
+    is_user_namespace_failure, probe_bwrap_with, probe_command_spec, probe_system_bwrap,
+    probe_system_bwrap_with, BwrapProbe, ProbeExec, ProbeOutcome, ProbeRun, SystemProbeExec,
+    SYSTEM_BWRAP_PROBE_POLL_INTERVAL, SYSTEM_BWRAP_PROBE_STDERR_LIMIT_BYTES,
+    SYSTEM_BWRAP_PROBE_TIMEOUT, SYSTEM_BWRAP_PROGRAM, USER_NAMESPACE_FAILURES,
+};
+#[cfg(target_os = "linux")]
+pub use linux::wsl::{is_wsl1, proc_version_indicates_wsl1, WSL1_BWRAP_WARNING};
+#[cfg(target_os = "linux")]
 pub use linux::{
-    build_bwrap_argv, detect_sandbox_with, find_bwrap_in_path_with, find_system_bwrap_in_path,
-    get_platform_sandbox, masks_for, run_sandboxed, run_sandboxed_with, SandboxProbe, SystemProbe,
+    build_bwrap_argv, detect_sandbox_detailed_with, detect_sandbox_with, find_bwrap_in_path_with,
+    find_system_bwrap_in_path, get_platform_sandbox, masks_for, run_sandboxed, run_sandboxed_with,
+    SandboxDetection, SandboxProbe, SystemProbe,
 };
 
 #[cfg(target_os = "macos")]
