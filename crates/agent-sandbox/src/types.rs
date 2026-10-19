@@ -2,6 +2,7 @@
 //! `sandboxing/src/manager.rs`，命名按 D4 拍板冻结）。
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -93,6 +94,27 @@ pub struct ExecStatus {
     pub success: bool,
 }
 
+/// 有界执行参数：超时与每条流的输出字节上限。
+///
+/// 默认值与 `agent-tools-exec` 的 `ExecConfig` 保持一致（30s / 30000 字节），
+/// 两层的默认行为不会互相漂移。stdout 与 stderr **各自独立**计量上限。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecBounds {
+    /// 命令总预算；到点 kill 直接子进程并返回已收输出。
+    pub timeout: Duration,
+    /// stdout 与 stderr 各自的保留字节上限；超出部分继续读但丢弃。
+    pub max_output_bytes: usize,
+}
+
+impl Default for ExecBounds {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(30),
+            max_output_bytes: 30_000,
+        }
+    }
+}
+
 /// 沙箱执行结果。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecOutcome {
@@ -102,6 +124,12 @@ pub struct ExecOutcome {
     pub stderr: Vec<u8>,
     /// 实际生效的沙箱类型。
     pub sandbox: SandboxType,
+    /// 是否因 [`ExecBounds::timeout`] 到点被 kill；为真时输出是超时前的部分输出。
+    #[serde(default)]
+    pub timed_out: bool,
+    /// stdout 或 stderr 是否撞到 [`ExecBounds::max_output_bytes`] 上限。
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// 沙箱策略：无沙箱时 `Auto` 偏好是否允许转人工审批。默认 `false`（fail-closed）。

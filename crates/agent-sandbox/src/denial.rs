@@ -89,6 +89,8 @@ mod tests {
             stdout: Vec::new(),
             stderr: stderr.as_bytes().to_vec(),
             sandbox,
+            timed_out: false,
+            truncated: false,
         }
     }
 

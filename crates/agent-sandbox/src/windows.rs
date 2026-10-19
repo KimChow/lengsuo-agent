@@ -155,6 +155,9 @@ fn run_unsandboxed(spec: CommandSpec) -> Result<ExecOutcome, SandboxError> {
         stdout: out.stdout,
         stderr: out.stderr,
         sandbox: SandboxType::None,
+        // Windows 后端尚未接入有界执行层：如实报告未超时/未截断。
+        timed_out: false,
+        truncated: false,
     })
 }
 
