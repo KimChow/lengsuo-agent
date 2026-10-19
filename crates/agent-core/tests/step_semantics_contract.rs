@@ -144,6 +144,9 @@ fn one_send_text_makes_exactly_one_provider_call() {
 }
 
 /// C1b：receipt 事件与持久 JSONL 回放逐项一致（durable record 单队列锚点）。
+/// 回合事件面现为 `["user", "text", "done"]`：用户输入入事件后新增一条 user
+/// 开头事件（W1-core），其余不变式（receipt ≡ log.replay 的 seq 逐项相等、
+/// 首条 user、末条 done、中间不得出现未知 kind）原样保留。
 #[test]
 fn events_durable_and_replay_matches_receipt() {
     let p = ScriptedProvider::new(vec![text_step("落盘校验")]);
@@ -161,9 +164,27 @@ fn events_durable_and_replay_matches_receipt() {
     let replay_seq: Vec<u64> = replayed.iter().map(|e| e.seq).collect();
     assert_eq!(receipt_seq, replay_seq, "receipt 即持久日志，不得旁路");
     let replay_kinds: Vec<&str> = replayed.iter().map(|e| e.kind.as_str()).collect();
+    // 因为 user 事件入流而更新期望：回合事件面 = user 开头 + 本回合产出（text）+ done 收口。
+    // 期望只多了一条实际存在的 user 事件，不变式本身未削弱（kind 序列仍逐项相等、
+    // 首条限定 user、末条限定 done、中间不得出现未知 kind）。
+    assert_eq!(
+        replay_kinds.first().copied(),
+        Some("user"),
+        "回合事件面第一条必须是 user（用户输入入事件的锚点）: {replay_kinds:?}"
+    );
+    assert_eq!(
+        replay_kinds.last().copied(),
+        Some("done"),
+        "回合事件面必须以 done 收口: {replay_kinds:?}"
+    );
+    assert_eq!(
+        &replay_kinds[1..replay_kinds.len() - 1],
+        ["text"],
+        "user 与 done 之间只允许本回合产出事件"
+    );
     assert_eq!(
         replay_kinds,
-        vec!["text", "done"],
+        vec!["user", "text", "done"],
         "回放 kind 序列必须与 receipt 一致"
     );
     assert_eq!(receipt.last_seq, *replay_seq.last().expect("有事件"));

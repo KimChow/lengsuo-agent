@@ -2,6 +2,11 @@
 //! [`Runtime::step`](StepOutcome)、工具调用/结果记录与 check_tool。
 //!
 //! 步语义：一步 = 一次逻辑 LLM 调用。
+//! - 用户输入本身也是一条 durable 事件（金标 `session-event` 的 user 消息
+//!   投影：`InboxDelivered` 是会话事件面上的首条，投影出 user 消息）：
+//!   [`Runtime::send_text`] 先落 user 消息、随后落 `"user"` 事件；提醒回合的
+//!   提醒消息同样落一条 `"user"` 事件。二者都在回合事件面**开头**，事件日志
+//!   因此可逐条重建消息序列（重建本身留给下一张卡）。
 //! - 每步只发一次 provider 调用；步在**首个工具调用**处终结，同批尾随的文本/结束项
 //!   不在本步内存里续消费，由重读历史后的新一步重新产出；
 //! - 工具调用先落进会话历史再结算结果；下一步**重读会话历史**（ToolCall 与
@@ -77,8 +82,15 @@ impl Runtime {
         let _queued = drain.lock().expect("会话投递锁不得毒化");
         // 首步 history 取本轮输入推入之前的快照（本轮输入只作为 user_text 出现）。
         let history = self.get_session(id)?.messages;
-        self.push_message(id, Role::User, text.to_string(), None)?;
-        self.run_turn(id, text, &history)
+        // 脱敏只做一次：`emit` 内部还会再过一次 `redact_json`，若此处先脱敏，
+        // 事件 text 与历史消息 content 才逐字同一（否则敏感片段被改两次）。
+        let redacted = self.redact(text);
+        let session = self.push_message(id, Role::User, redacted.clone(), None)?;
+        // 用户输入本身也是一条 durable 事件（金标 `session-event` 的 user 消息投影：
+        // `InboxDelivered` 是会话事件面上的首条，投影出 user 消息）。顺序：消息先落、
+        // 事件随后，且事件必须是回合事件面的第一条，否则 receipt ≡ 持久日志会破。
+        let event = self.emit(&session, "user", json!({ "text": redacted }))?;
+        self.run_turn(id, text, &history, event)
     }
 
     /// 取会话投递锁（同一会话的回合据此串行，不穿插步边界）。
@@ -95,13 +107,18 @@ impl Runtime {
     /// 先过交付物提醒判定（满足则追加一次提醒回合）。每步经
     /// [`Runtime::step_with_write_ledger`] 执行，本方法只分派 outcome 与收口
     /// `TurnReceipt`。
+    ///
+    /// `first_event` 是 `send_text` 已在消息落盘后发布的 `user` 事件：它是
+    /// 回合事件面的第一条（金标 `session-event` 的 user 消息投影），必须进
+    /// [`TurnReceipt::events`]，否则 receipt 与持久日志的 seq 逐项相等会破。
     fn run_turn(
         &self,
         id: Uuid,
         text: &str,
         history: &[Message],
+        first_event: Event,
     ) -> Result<TurnReceipt, CoreError> {
-        let mut events: Vec<Event> = Vec::new();
+        let mut events: Vec<Event> = vec![first_event];
         // 首步用「回合前历史 + 本轮输入」；续步重读会话历史（本轮输入已在其中）。
         let mut pre_turn = Some(history.to_vec());
         // 回合输入：原回合为本轮用户输入；提醒回合切换为提醒文案。
@@ -150,12 +167,16 @@ impl Runtime {
                             "thinking",
                             json!({ "reminder": DELIVERABLE_REMINDER_NOTE }),
                         )?);
-                        self.push_message(
-                            id,
-                            Role::User,
-                            DELIVERABLE_REMINDER_NOTE.to_string(),
-                            None,
-                        )?;
+                        // 提醒文案是常量，但同样只脱敏一次（与 `send_text` 同口径）：
+                        // 提醒消息先落，随后落提醒回合的 `user` 事件，顺序与消息一致。
+                        let reminder_text = self.redact(DELIVERABLE_REMINDER_NOTE);
+                        let session =
+                            self.push_message(id, Role::User, reminder_text.clone(), None)?;
+                        events.push(self.emit(
+                            &session,
+                            "user",
+                            json!({ "text": reminder_text }),
+                        )?);
                         pre_turn = Some(self.get_session(id)?.messages);
                         turn_input = DELIVERABLE_REMINDER_NOTE.to_string();
                         continue;

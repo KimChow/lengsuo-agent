@@ -293,10 +293,16 @@ fn no_tool_step_converges_with_existing_event_shape() {
     assert_eq!(messages.last().expect("有消息").content, "收到，收工");
 
     // 同款脚本走整回合：receipt = 步事件 + done{completed}，与既有 runtime 测试
-    // （step_semantics_contract C1b 的 ["text","done"]）逐条一致。
+    // （step_semantics_contract C1b）逐条一致。
+    // 因为 user 事件入流而更新期望（W1-core）：整回合事件面现以 user 开头。
     let receipt = rt.send_text(s.id, "再跑").expect("turn");
-    assert_eq!(kinds(&receipt.events), vec!["text", "done"]);
-    assert_eq!(receipt.events[0].payload["text"], "再跑答复");
+    assert_eq!(
+        kinds(&receipt.events),
+        vec!["user", "text", "done"],
+        "因 user 事件入流而更新的整回合 kind 序列"
+    );
+    assert_eq!(receipt.events[0].payload["text"], "再跑");
+    assert_eq!(receipt.events[1].payload["text"], "再跑答复");
     assert_eq!(
         done_payload(&receipt),
         json!({ "status": "completed", "steps": 1 })
@@ -530,26 +536,36 @@ fn run_turn_receipt_matches_pre_refactor_golden() {
 
     let receipt = rt.send_text(s.id, "读 g.txt").expect("turn");
 
-    // 事件序列（重构前金标）：thinking → tool_use → tool_result → text → done。
+    // 事件序列（重构前金标）：thinking → tool_use → tool_result → text → done；
+    // 因 user 事件入流（W1-core）而更新期望：回合事件面多一条 user 开头事件，
+    // 其后逐条不变。不变式未削弱——序列仍逐项相等。
     assert_eq!(
         kinds(&receipt.events),
-        vec!["thinking", "tool_use", "tool_result", "text", "done"],
+        vec![
+            "user",
+            "thinking",
+            "tool_use",
+            "tool_result",
+            "text",
+            "done"
+        ],
         "事件 kind 序列必须逐条一致"
     );
-    assert_eq!(receipt.events[0].payload["text"], "先想");
-    assert_eq!(receipt.events[1].payload["name"], "fs.read");
+    assert_eq!(receipt.events[0].payload["text"], "读 g.txt");
+    assert_eq!(receipt.events[1].payload["text"], "先想");
+    assert_eq!(receipt.events[2].payload["name"], "fs.read");
     assert_eq!(
-        receipt.events[1].payload["args"],
+        receipt.events[2].payload["args"],
         json!({ "path": "g.txt" })
     );
     // Allow 结算的 tool_result 事件载荷 = push_tool_result 的摘要面。
-    assert_eq!(receipt.events[2].payload["name"], "fs.read");
-    assert_eq!(receipt.events[2].payload["preview"], "{\"ok\":true}");
-    assert_eq!(receipt.events[2].payload["chars"], 11);
-    assert_eq!(receipt.events[2].payload["resultRef"], Value::Null);
-    assert_eq!(receipt.events[3].payload["text"], "完事");
+    assert_eq!(receipt.events[3].payload["name"], "fs.read");
+    assert_eq!(receipt.events[3].payload["preview"], "{\"ok\":true}");
+    assert_eq!(receipt.events[3].payload["chars"], 11);
+    assert_eq!(receipt.events[3].payload["resultRef"], Value::Null);
+    assert_eq!(receipt.events[4].payload["text"], "完事");
     assert_eq!(
-        receipt.events[4].payload,
+        receipt.events[5].payload,
         json!({ "status": "completed", "steps": 2 })
     );
 

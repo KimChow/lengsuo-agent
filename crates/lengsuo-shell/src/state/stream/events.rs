@@ -48,6 +48,18 @@ impl SessionStreamState {
         }
         let text = extract_text(event);
         match event.kind {
+            EventKind::User => {
+                // 用户输入事件：与消息序列重建同一口径，作为一条 User 消息入流。
+                self.messages.push(SessionMessage {
+                    role: MessageRole::User,
+                    content: extract_text(event),
+                    tool: None,
+                    ts_ms: event.ts_ms,
+                    thinking: false,
+                });
+                self.phase = StreamPhase::Running;
+                Ok(())
+            }
             EventKind::Thinking => {
                 self.push_or_merge(true, &text, event.ts_ms);
                 self.phase = StreamPhase::Running;
