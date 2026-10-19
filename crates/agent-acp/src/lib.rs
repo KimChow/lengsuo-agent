@@ -23,7 +23,10 @@
 //! - [`transport`]：帧汇/帧源抽象与 [`transport::mock_transport`]（内存注入）；
 //! - [`stdio`]：真实子进程 stdio（spawn 前环境 scrub、reader/writer 线程、有界拆除）；
 //! - [`router`]：入站帧分派语义（pending 完成 / handler 应答 / 有界事件队列）；
-//! - [`client`]：[`client::Client`]——请求-响应路由、control 双面与事件 API。
+//! - [`client`]：[`client::Client`]——请求-响应路由、control 双面与事件 API
+//!   （本端作为**被 spawn 的 agent 的对面**，主动发请求）；
+//! - [`host`]：[`host::Host`]——同一套帧类型上的**被 spawn 的一端**：方法表应答
+//!   入站请求、control 回调应答、主动推通知，无 pending 表（不发起请求）。
 //!
 //! 字段命名按 19 册 bundle 实证取 camelCase（`sessionId`/`toolCallId`/
 //! `sessionUpdate`），扩展键 `_meta` 按 27 册命名空间保留。
@@ -36,6 +39,9 @@ pub mod client;
 pub mod codec;
 pub mod control;
 pub mod error;
+pub mod host;
+mod host_router;
+mod host_send;
 pub mod message;
 pub mod methods;
 pub mod replay;
@@ -52,6 +58,9 @@ pub use control::{
     TopLevel,
 };
 pub use error::Error;
+pub use host::{
+    Host, HostConfig, HostEvent, NextEvent as HostNextEvent, DEFAULT_MAX_EVENTS as HOST_MAX_EVENTS,
+};
 pub use message::{
     JsonRpcErrorObject, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, JsonRpcVersion,
     Message, RequestId, JSONRPC_ERROR_INVALID_PARAMS, JSONRPC_ERROR_INVALID_REQUEST,
