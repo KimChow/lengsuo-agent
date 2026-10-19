@@ -5,6 +5,7 @@
 //! 权限判定不在本层（归 `agent-core` 权限门）。
 
 mod env;
+pub mod guard;
 mod process;
 
 use std::path::Path;
