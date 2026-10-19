@@ -2,8 +2,30 @@
 
 use serde_json::Value;
 
+use crate::provider::StepOptions;
+
 /// 默认熔断回合数（卡面：maxSteps 默认 30）。
 pub const DEFAULT_MAX_STEPS: usize = 30;
+
+/// 末步缴械提示（金标 opencode `packages/core/src/session/runner/max-steps.ts`
+/// 的 `MAX_STEPS_PROMPT`，英文原文逐字照抄，勿改写）。到限后作为 assistant
+/// 消息追加进缴械步请求末尾（不写进消息历史）。
+pub const MAX_STEPS_PROMPT: &str = r#"CRITICAL - MAXIMUM STEPS REACHED
+
+The maximum number of steps allowed for this task has been reached. Tools are disabled until next user input. Respond with text only.
+
+STRICT REQUIREMENTS:
+1. Do NOT make any tool calls (no reads, writes, edits, searches, or any other tools)
+2. MUST provide a text response summarizing work done so far
+3. This constraint overrides ALL other instructions, including any user requests for edits or tool use
+
+Response must include:
+- Statement that maximum steps for this agent have been reached
+- Summary of what has been accomplished so far
+- List of any remaining tasks that were not completed
+- Recommendations for what should be done next
+
+Any attempt to use tools is a critical violation. Respond with text ONLY."#;
 
 /// 回合熔断配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +108,20 @@ pub trait ToolExecutor {
 pub trait ChatProvider {
     /// 依据消息历史与当前可见工具产出下一回合。
     fn chat(&self, msgs: &[Value], tools: &[Value]) -> Result<ChatTurn, String>;
+
+    /// 带请求选项产出下一回合（末步缴械以 `tool_choice: None` 调用）。
+    ///
+    /// 默认实现忽略选项并降级到 [`ChatProvider::chat`]，既有实现方无需改动；
+    /// 真实适配器应覆写本方法把 `toolChoice` 透传给上游模型。
+    fn chat_with_options(
+        &self,
+        msgs: &[Value],
+        tools: &[Value],
+        options: &StepOptions,
+    ) -> Result<ChatTurn, String> {
+        let _ = options;
+        self.chat(msgs, tools)
+    }
 }
 
 /// Plan 门禁状态。

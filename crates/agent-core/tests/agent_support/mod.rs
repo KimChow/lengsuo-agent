@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use agent_core::provider::StepOptions;
 use agent_core::schema::{Event, EventKind, Mode};
 use agent_core::{
     AgentLoop, ChatProvider, ChatTurn, LoopLimits, LoopOutcome, PlanGate, ToolCall, ToolExecutor,
@@ -18,11 +19,12 @@ use agent_core::{
 
 // ---------------- Mock provider ----------------
 
-/// 脚本化回合的 Mock：按队列出回合，并记录每次看到的工具面与消息历史。
+/// 脚本化回合的 Mock：按队列出回合，并记录每次看到的工具面、消息历史与请求选项。
 pub struct MockProvider {
     turns: RefCell<VecDeque<ChatTurn>>,
     seen_tools: RefCell<Vec<Vec<String>>>,
     seen_msgs: RefCell<Vec<Vec<Value>>>,
+    seen_options: RefCell<Vec<Option<StepOptions>>>,
 }
 
 impl MockProvider {
@@ -31,6 +33,7 @@ impl MockProvider {
             turns: RefCell::new(turns.into()),
             seen_tools: RefCell::new(Vec::new()),
             seen_msgs: RefCell::new(Vec::new()),
+            seen_options: RefCell::new(Vec::new()),
         }
     }
 
@@ -44,14 +47,18 @@ impl MockProvider {
         self.seen_msgs.borrow()[n].clone()
     }
 
+    /// 第 n 回合（0 起）收到的请求选项；`None` 表示走的是无选项的旧 `chat` 入口。
+    pub fn options_at(&self, n: usize) -> Option<StepOptions> {
+        self.seen_options.borrow()[n]
+    }
+
     /// provider 被调用次数（= 消耗回合数）。
     pub fn chat_calls(&self) -> usize {
         self.seen_tools.borrow().len()
     }
-}
 
-impl ChatProvider for MockProvider {
-    fn chat(&self, msgs: &[Value], tools: &[Value]) -> Result<ChatTurn, String> {
+    /// 记录消息/工具面后按脚本出回合（`chat` 与 `chat_with_options` 共用）。
+    fn serve(&self, msgs: &[Value], tools: &[Value]) -> Result<ChatTurn, String> {
         self.seen_msgs.borrow_mut().push(msgs.to_vec());
         self.seen_tools.borrow_mut().push(
             tools
@@ -63,6 +70,24 @@ impl ChatProvider for MockProvider {
             .borrow_mut()
             .pop_front()
             .ok_or_else(|| "mock 脚本已耗尽".to_string())
+    }
+}
+
+impl ChatProvider for MockProvider {
+    fn chat(&self, msgs: &[Value], tools: &[Value]) -> Result<ChatTurn, String> {
+        self.seen_options.borrow_mut().push(None);
+        self.serve(msgs, tools)
+    }
+
+    /// 缴械步观测面：记录本次调用的 `toolChoice` 选项后按脚本出回合。
+    fn chat_with_options(
+        &self,
+        msgs: &[Value],
+        tools: &[Value],
+        options: &StepOptions,
+    ) -> Result<ChatTurn, String> {
+        self.seen_options.borrow_mut().push(Some(*options));
+        self.serve(msgs, tools)
     }
 }
 
