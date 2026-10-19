@@ -120,7 +120,7 @@ impl RuntimeBuilder {
                 self.config.unwrap_or_else(RuntimeConfig::default_v0),
             )),
             tasks,
-            executor: self.tool_executor,
+            executor: Arc::new(Mutex::new(self.tool_executor)),
         })
     }
 }
