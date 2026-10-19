@@ -213,6 +213,52 @@ fn expert_mode_also_gets_reminder() {
     assert_eq!(outcome.steps, 2);
 }
 
+// ---------------- 步边界：工具结算后重读历史（本卡新增不变式） ----------------
+
+#[test]
+fn next_step_provider_request_reloads_settled_tool_result() {
+    // 一步结算出的工具结果，必须在**下一**步的 provider 请求里出现——证明每步
+    // 的历史都是「重读 + 重新派生请求」，而不是复用上一份请求（卡面验收 4）。
+    let provider = MockProvider::new(vec![
+        turn("先写入。", call("fs.write", json!({"path": "/a"}))),
+        turn("已写入。", vec![]),
+    ]);
+    let executor = MockExecutor::default();
+    let (outcome, _, _) = run_loop(
+        Mode::Craft,
+        &provider,
+        &executor,
+        default_limits(),
+        PlanGate::default(),
+        "写入 /a",
+    )
+    .expect("两步回合跑完");
+    assert_eq!(outcome.status, LoopStatus::Completed);
+    assert_eq!(outcome.steps, 2, "工具步 + 收尾步");
+
+    // 第 2 次 provider 调用（0 起索引 1）看到的历史里，末条即第 1 步结算出的
+    // fs.write 结果（content 为执行器返回值、tool.name 为工具名）。
+    let second = provider.msgs_at(1);
+    let last = second.last().expect("第 2 步请求有历史");
+    assert_eq!(last["role"], "tool_result", "末条是该步前结算的工具结果");
+    assert_eq!(last["tool"]["name"], "fs.write");
+    assert!(
+        last["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("\"bytes\":12"),
+        "内容来自执行器实际返回值: {last:?}"
+    );
+    // 第 1 步请求里没有该结果（它是第 1 步之后才结算的）。
+    assert!(
+        provider
+            .msgs_at(0)
+            .iter()
+            .all(|m| m["role"] != "tool_result"),
+        "第 1 步请求不得含尚不存在的工具结果"
+    );
+}
+
 // ---------------- 事件顺序 ----------------
 
 #[test]

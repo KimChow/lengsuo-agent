@@ -1,6 +1,19 @@
-//! Agent loop v0（波次 1 卡 3）：参考客户端 8 步回合 + 五模式白名单 + Plan 门禁 + maxSteps 熔断。
+//! Agent loop：面向 [`ChatProvider`] 宿主的**回合适配层**——外推步、内管白名单/门禁，
+//! 结构对齐参考件 `session/runner/llm.ts`（外层只推进步）+ `runner/step.ts`（一步原语）。
+//!
+//! 步语义（与 [`Runtime::step`](crate::runtime::Runtime::step) 同一词汇）：
+//! 一步 = 一次 provider 调用；`run()` 外层只推进步，每步经 [`run`] 内的 `History`
+//! **重新派生**本次请求（工具结算后开新步重读），[`run::StepFlow`] 四走向只报
+//! 「本步发生了什么」，回合收口归外层。
+//!
+//! **与 Runtime 的收敛状态（本卡）**：本层已按 `StepOutcome` 的四态词汇收敛结构，
+//! 但尚**不能**把 provider/executor 借给 `Runtime` 执行——`Runtime` 注入面为
+//! `Arc<dyn Provider>` / `Arc<dyn ToolExecutor + Send + Sync>`（均隐含 `'static`），
+//! 而本层持有 `&'a dyn` 借用；改签名会破坏既有调用方（测试即契约）。缺口的完整
+//! 清单与建议的最小扩法见 `docs/loop-adapter-status.md`。
 //!
 //! 回合骨架（对应卡面 8 步）：
+
 //! 1. 理解：Quick/Ask 之外才带工具面；系统消息 = 模式模板 + 全模式硬规则；
 //! 2. chat：调 [`ChatProvider::chat`] 取回文本与工具请求（v0 同步整段文本，流式由网关侧切分）；
 //! 3. 选工具：按 [`crate::mode::mode_policy`] 白名单过滤，白名单外**不执行**，直接回填 `denied` 结果；
@@ -23,7 +36,7 @@
 //!
 //! 本卡不接真实工具与真实模型：trait 由宿主实现，`EchoProvider` 之外另有测试用 Mock。
 //!
-//! 按职责拆分：`types`（公开词汇与 trait 契约）、`run`（八步回合驱动）、
+//! 按职责拆分：`types`（公开词汇与 trait 契约）、`run`（外层步循环 + 一步原语 + 历史组装）、
 //! `guard`（白名单与规划门禁处理）、`support`（共用小工具）。
 
 mod guard;
