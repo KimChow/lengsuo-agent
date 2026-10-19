@@ -61,6 +61,7 @@ dependencies = [
  "agent-prompts",
  "agent-sandbox",
  "agent-tasks",
+ "agent-tools-exec",
  "chrono",
  "regex",
  "serde",
