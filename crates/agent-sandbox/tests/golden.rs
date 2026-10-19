@@ -315,16 +315,14 @@ fn forbid_run_scrubs_env() {
     );
 }
 
-/// 真实 smoke（47 环境）：用实际 bwrap 跑 `--ro-bind / / --uid 0 --gid 0 --unshare-net
-/// /bin/sh -c "exit 3"` 断言退出码 3 透传。#[ignore]——正常测试不跑，需特权环境手动
-/// `cargo test -- --ignored`。
+/// 真实 smoke（宿主机环境，#[ignore]）：探测与执行必须**一致**——
+/// 探测判可用则真实 run 必须跑通且退出码透传；探测判不可用则 Require 必须 fail-closed
+/// 拒绝（不得静默直跑）。正常测试不跑，需手动 `cargo test -- --ignored`。
 #[test]
-#[ignore = "requires privileged bwrap (user namespaces) and the real binary"]
-fn smoke_bwrap_exit_code() {
-    if agent_sandbox::find_system_bwrap_in_path().is_none() {
-        eprintln!("bwrap not present; skipping smoke");
-        return;
-    }
+#[ignore = "spawns the real bwrap on the host"]
+fn smoke_probe_matches_real_execution() {
+    let probe = agent_sandbox::probe_system_bwrap();
+    eprintln!("real bwrap probe: {probe:?}");
     let spec = CommandSpec {
         program: PathBuf::from("/bin/sh"),
         args: vec!["-c".to_string(), "exit 3".to_string()],
@@ -334,18 +332,27 @@ fn smoke_bwrap_exit_code() {
         read_only_roots: vec![],
         network: NetworkMode::Blocked,
     };
-    let out = run_sandboxed_with(
+    let run = run_sandboxed_with(
         &agent_sandbox::SystemProbe,
         spec,
         SandboxablePreference::Require,
         SandboxPolicy::default(),
-    )
-    .expect("bwrap smoke should run under privileged host");
-    assert_eq!(out.sandbox, SandboxType::LinuxSeccomp);
-    assert_eq!(
-        out.status.code,
-        Some(3),
-        "exit code 3 must propagate through bwrap"
     );
-    assert!(!out.status.success);
+    if probe.is_usable() {
+        let out = run.expect("probe says usable, real run must work");
+        assert_eq!(out.sandbox, SandboxType::LinuxSeccomp);
+        assert_eq!(
+            out.status.code,
+            Some(3),
+            "exit code 3 must propagate through bwrap"
+        );
+        assert!(!out.status.success);
+    } else {
+        match run {
+            Err(SandboxError::Unavailable(message)) => {
+                assert!(message.contains(probe.reason().unwrap_or_default().as_str()));
+            }
+            other => panic!("probe unusable but Require did not fail closed: {other:?}"),
+        }
+    }
 }
