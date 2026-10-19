@@ -9,6 +9,7 @@ pub mod bus;
 pub mod config;
 pub mod error;
 pub mod event_log;
+pub mod executor;
 #[allow(clippy::module_inception)]
 pub mod r#loop;
 pub mod mode;
@@ -23,6 +24,7 @@ pub mod workspace_read;
 
 pub use error::CoreError;
 pub use event_log::{EventLog, JsonlEventLog};
+pub use executor::{ExecToolExecutor, EXEC_TOOL_NAME};
 pub use mode::{mode_policy, ModePolicy};
 pub use permission::{Decision, PermissionGate};
 pub use provider::{Provider, ProviderStep, TurnContext};
