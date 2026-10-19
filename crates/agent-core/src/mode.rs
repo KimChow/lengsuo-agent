@@ -6,7 +6,7 @@
 //!
 //! 五个模式与 [`crate::schema::Mode`] 一一对应（该枚举已含 `Expert`，此处复用不重复定义）：
 //! - `Quick`：空集，仅 chat；
-//! - `Ask`：只读白名单（读文件/读网络/列任务/用技能）；
+//! - `Ask`：只读白名单（读文件/读网络/列任务/读单任务/用技能）；
 //! - `Plan`：craft 集合去掉全部写/执行类，另加 `plan.enter` / `plan.exit` 门禁工具；
 //! - `Craft`：全集；
 //! - `Expert`：Craft 再加 `plan.enter` / `plan.exit`。
@@ -16,13 +16,14 @@ use std::collections::BTreeSet;
 use crate::schema::Mode;
 
 /// 只读类逻辑工具名（Ask 白名单主体，也是 craft 全集的只读段）。
-pub const READONLY_TOOLS: [&str; 7] = [
+pub const READONLY_TOOLS: [&str; 8] = [
     "fs.read",
     "fs.glob",
     "fs.search",
     "web.fetch",
     "web.search",
     "task.list",
+    "task.get",
     "skill.use",
 ];
 
@@ -139,7 +140,7 @@ const QUICK_TEMPLATE: &str = "## 能力边界（quick · 只答不操作）
 - 只基于用户提供的信息与既有知识作答；需要真实读写或执行时请切换到 ask、plan 或 craft。";
 
 const ASK_TEMPLATE: &str = "## 工具能力（ask · 只读白名单）
-- 允许的工具仅限只读类别：fs.read、fs.glob、fs.search、web.fetch、web.search、task.list、skill.use。
+- 允许的工具仅限只读类别：fs.read、fs.glob、fs.search、web.fetch、web.search、task.list、task.get、skill.use。
 - 只读白名单之外的动作一律不发起：不写入、不删除、不执行命令。";
 
 const PLAN_TEMPLATE: &str = "## 工具能力（plan · 只读 + 规划门禁）
@@ -147,7 +148,7 @@ const PLAN_TEMPLATE: &str = "## 工具能力（plan · 只读 + 规划门禁）
 - 先给出计划（目标、步骤、影响文件、验证方式、风险），由用户经 plan.exit 批准后才进入实际执行。";
 
 const CRAFT_TEMPLATE: &str = "## 工具能力（craft · 全工具）
-- 可用工具覆盖只读与写/执行两类：fs.read、fs.glob、fs.search、web.fetch、web.search、task.list、skill.use、fs.write、fs.delete、shell.exec、task.create、task.update、skill.install。
+- 可用工具覆盖只读与写/执行两类：fs.read、fs.glob、fs.search、web.fetch、web.search、task.list、task.get、skill.use、fs.write、fs.delete、shell.exec、task.create、task.update、skill.install。
 - 每个工具调用都必须真实发起，是否放行由调用方的权限门决定；被拒绝时不得假装已执行。
 - 改动工作区前先读取现状，收尾时列出实际产生的变更与交付物。";
 

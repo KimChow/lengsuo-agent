@@ -7,6 +7,7 @@ pub struct RuntimeBuilder {
     provider: Option<Arc<dyn Provider>>,
     gate: Option<PermissionGate>,
     config: Option<RuntimeConfig>,
+    task_board: Option<TaskBoard>,
 }
 
 impl RuntimeBuilder {
@@ -31,6 +32,13 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn config(mut self, config: RuntimeConfig) -> Self {
         self.config = Some(config);
+        self
+    }
+
+    /// 注入任务看板（默认系统时钟；测试注入受控时钟保证时间戳确定）。
+    #[must_use]
+    pub fn task_board(mut self, board: TaskBoard) -> Self {
+        self.task_board = Some(board);
         self
     }
 
@@ -89,6 +97,7 @@ impl RuntimeBuilder {
             config: Arc::new(Mutex::new(
                 self.config.unwrap_or_else(RuntimeConfig::default_v0),
             )),
+            tasks: Arc::new(Mutex::new(self.task_board.unwrap_or_default())),
         })
     }
 }
