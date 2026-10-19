@@ -10,6 +10,10 @@
 //! - [`message`]：JSON-RPC 三分类（Request / Response / Notification）与 error 对象；
 //! - [`methods`]：核心方法的 params/result 类型（initialize、authenticate、
 //!   session 生命周期、prompt、cancel、session/update 通知、elicitation、权限）；
+//! - [`tasks`]：任务四方法类型（`tasks/list`/`get`/`cancel`/`result`，27 册 §2
+//!   「ACP 任务」族——协议层任务，与工具层 TaskOutput 分属两层）；
+//! - [`replay`]：事件重放协议类型（重放请求/结果、水合阶段与回放安全标记
+//!   `promptReplaySafe`/`isCompactInternal`，19 册 §4 + 27 册 §1）；
 //! - [`control`]：`control_request`/`control_notification` 信封（subtype 开放枚举）
 //!   与帧顶层判别 [`control::TopLevel`]；
 //! - [`codec`]：行分隔 JSON 帧编解码（纯函数 + 增量解码状态机）；
@@ -24,7 +28,7 @@
 //! 字段命名按 19 册 bundle 实证取 camelCase（`sessionId`/`toolCallId`/
 //! `sessionUpdate`），扩展键 `_meta` 按 27 册命名空间保留。
 //!
-//! 遗留（P3+）：事件重放协议、tasks 四方法与 `B.*` 全方法面的类型补全。
+//! 遗留（P4+）：`B.*` 全方法面的类型补全。
 
 #![forbid(unsafe_code)]
 
@@ -34,8 +38,10 @@ pub mod control;
 pub mod error;
 pub mod message;
 pub mod methods;
+pub mod replay;
 pub mod router;
 pub mod stdio;
+pub mod tasks;
 pub mod transport;
 
 pub use codec::{
@@ -58,6 +64,13 @@ pub use methods::{
     PermissionOutcome, PermissionOutcomeKind, PromptParams, PromptResult, RequestPermissionParams,
     ResumeSessionParams, ResumeSessionResult, SessionId, SessionNotification, SessionUpdate,
     SetSessionModeParams, StopReason, TextContent, ToolCallStatus, ToolCallUpdate, ToolKind,
+};
+pub use replay::{
+    ReplayEvent, ReplayEventsParams, ReplayEventsResult, ReplayPhase, ReplaySafetyMeta,
+};
+pub use tasks::{
+    Task, TaskId, TaskStatus, TasksCancelParams, TasksCancelResult, TasksGetParams, TasksGetResult,
+    TasksListParams, TasksListResult, TasksResultParams, TasksResultResult,
 };
 
 /// 编解码、类型层与传输的统一 Result 别名。
