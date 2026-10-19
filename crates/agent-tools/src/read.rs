@@ -17,7 +17,7 @@ impl FsToolbox {
         offset: usize,
         limit: usize,
     ) -> Result<(Vec<EntryInfo>, usize), ToolError> {
-        let abs = self.guard(Path::new(p))?;
+        let abs = self.resolve(Path::new(p))?;
         let meta = fs::metadata(&abs).map_err(|e| ToolError::from_io(abs.clone(), e))?;
         if !meta.is_dir() {
             return Err(ToolError::NotADirectory(abs));
@@ -26,6 +26,10 @@ impl FsToolbox {
         let mut entries: Vec<EntryInfo> = Vec::new();
         for item in read {
             let item = item.map_err(|e| ToolError::from_io(abs.clone(), e))?;
+            // 受保护分量整体剔除：连名字都不回传（与 search/glob 的剪枝一致）。
+            if self.is_protected_name(&item.file_name()) {
+                continue;
+            }
             let child = item.path();
             let child_meta =
                 fs::metadata(&child).map_err(|e| ToolError::from_io(child.clone(), e))?;
@@ -50,7 +54,7 @@ impl FsToolbox {
     /// `file:read`：整读为 UTF-8 字符串，并把路径记入「本次已见」集合。
     /// 上限 = `max_bytes` 与 8 MiB 取小；超限 ⇒ `TooLarge`；非 UTF-8 ⇒ `Io(InvalidData)`。
     pub fn read(&self, p: &str, max_bytes: u64) -> Result<String, ToolError> {
-        let abs = self.guard(Path::new(p))?;
+        let abs = self.resolve(Path::new(p))?;
         let limit = max_bytes.min(MAX_SINGLE_READ_BYTES);
         let meta = fs::metadata(&abs).map_err(|e| ToolError::from_io(abs.clone(), e))?;
         if meta.is_dir() {

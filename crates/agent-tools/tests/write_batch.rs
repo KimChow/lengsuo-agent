@@ -293,41 +293,29 @@ fn rename_同盘成功且不覆盖目标() {
     ));
 }
 
-/// 跨盘 rename：工作区内放一个指向 /dev/shm 的符号链接目录，
-/// rename 到其中即触发 EXDEV，验证退化为「复制 + 删除源」。
-/// 若 /dev/shm 与工作区同盘（无 EXDEV），断言退化为普通 rename 仍然成立。
+/// 经符号链接把文件改名/写出到工作区外必须 fail-closed。
+/// （解析闸上线前，该写法会跟随链接落到区外完成 EXDEV 退化复制。）
+/// 跨盘退化机械（copy_tree / remove_tree / EXDEV 判定）由 fs_ops 内单测覆盖。
 #[test]
 #[cfg(unix)]
-fn rename_跨盘退化为复制加删除() {
+fn rename_拒绝经符号链接越出工作区() {
     let sb = Sandbox::new();
     let tb = FsToolbox::new(&sb.workspace);
-    let shm = Path::new("/dev/shm");
-    if !shm.is_dir() {
-        eprintln!("跳过：本环境无 /dev/shm，无法模拟跨盘");
-        return;
-    }
-    let external = shm.join(format!("agent-tools-exdev-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&external);
-    fs::create_dir_all(&external).expect("创建 /dev/shm 测试目录失败");
+    let external = sb.outside.join("exdev-mount");
+    fs::create_dir_all(&external).expect("创建区外目录失败");
+    fs::symlink_metadata(&external).unwrap();
     let link = sb.ws("mnt");
-    fs::create_dir_all(link.parent().unwrap()).unwrap();
-    if fs::symlink_metadata(&link).is_err() {
-        std::os::unix::fs::symlink(&external, &link).expect("创建符号链接失败");
-    }
+    std::os::unix::fs::symlink(&external, &link).expect("创建符号链接失败");
 
     sb.put("cross.txt", "cross-device payload");
-    let target_abs = external.join("cross.txt");
-    let err = tb.rename("cross.txt", "mnt/cross.txt");
-    match err {
-        Ok(()) => {
-            // 已跨盘退化或同盘成功：源消失、目标内容正确。
-            assert!(!sb.ws("cross.txt").exists(), "源必须被移除");
-            assert_eq!(
-                fs::read_to_string(&target_abs).unwrap(),
-                "cross-device payload"
-            );
-        }
-        Err(e) => panic!("跨盘 rename 应退化成功，实际 {e:?}"),
-    }
-    let _ = fs::remove_dir_all(&external);
+    assert!(matches!(
+        tb.rename("cross.txt", "mnt/cross.txt").unwrap_err(),
+        ToolError::Denied(_)
+    ));
+    // 源保留、区外目标未出现。
+    assert_eq!(
+        fs::read_to_string(sb.ws("cross.txt")).unwrap(),
+        "cross-device payload"
+    );
+    assert!(!Path::new(&external).join("cross.txt").exists());
 }
