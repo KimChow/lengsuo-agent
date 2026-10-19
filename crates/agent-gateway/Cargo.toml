@@ -18,6 +18,17 @@ tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 uuid = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# 与 agent-sandbox 同源同版（lock 已有 windows-sys 0.61.2）：握手文件 ACL 三件套
+# GetNamedSecurityInfoW/SetEntriesInAclW/SetNamedSecurityInfoW（Authorization）
+# + 掩码/描述符常量（Security、Storage_FileSystem）+ 错误码与 LocalFree（Foundation）。
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 
