@@ -139,6 +139,7 @@ mod tasks;
 mod turns;
 
 pub use tasks::{Task, TaskStatus};
+pub use turns::StepOutcome;
 
 pub(super) fn narrow(text: &str, chars: usize) -> String {
     let mut out: String = text.chars().take(chars).collect();
