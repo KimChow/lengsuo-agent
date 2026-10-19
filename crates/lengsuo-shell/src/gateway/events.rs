@@ -21,10 +21,12 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{client_async, WebSocketStream};
 
-/// 事件类型。与协议冻结的 8 个名字一一对应，`rename_all = "snake_case"`。
+/// 事件类型。覆盖协议已定型的名字，`rename_all = "snake_case"`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
+    /// 用户输入（durable 事件；读侧据此重建消息序列）。
+    User,
     /// 模型思考增量。
     Thinking,
     /// 助手正文增量。
