@@ -4,6 +4,7 @@
 //! 隐私：跨会话层默认关闭；写路径由调用方负责脱敏；凭据绝不入内。
 
 mod caps;
+mod consolidate;
 mod daily;
 mod engine;
 mod error;
@@ -13,7 +14,8 @@ mod paths;
 pub mod read;
 pub mod search;
 
-pub use caps::{CAP_DAILY_LINE, CAP_PROJECT_MEMORY, CAP_SOUL, CAP_USER_MEMORY};
+pub use caps::{CAP_CONSOLIDATED, CAP_DAILY_LINE, CAP_PROJECT_MEMORY, CAP_SOUL, CAP_USER_MEMORY};
+pub use consolidate::{consolidate, ConsolidateReport};
 pub use daily::{append_daily, clear_daily, read_daily_tail};
 pub use engine::{MemoryBundle, MemoryEngine};
 pub use error::MemoryError;

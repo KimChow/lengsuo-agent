@@ -55,6 +55,13 @@ impl MemoryPaths {
         self.project_memory_dir().join(format!("{date}.md"))
     }
 
+    /// 蒸馏产物：`<workspace>/.lengsuo/memory/CONSOLIDATED.md`。
+    ///
+    /// 与 `MEMORY.md` 分离：项目记忆有 3000 字符上限，30 天摘要必须单独成文。
+    pub fn consolidated_file(&self) -> PathBuf {
+        self.project_memory_dir().join("CONSOLIDATED.md")
+    }
+
     /// 越界防护：`candidate` 必须落在授权根 `base` 内（规格 §2）。
     ///
     /// 两步判定：
