@@ -3,6 +3,8 @@
 //! 把 `docs/contracts/acp-method-ledger.md` 的清单变成可执行断言：
 //! - **动作面** `ACTIONS` **含首版冻结的 11 项且无重复**（与 `action_surface.rs` 同口径；
 //!   只守「不缩水」关系、不锁总数——扩容是正当演进，见 `BASELINE_ACTIONS` 注释）；
+//! - **镜像一致性**：`contracts_check::ACTIONS` 与权威清单
+//!   `agent_gateway::V0_ACTIONS` **逐项相等**（契约侧镜像 vs 权威来源）；
 //! - **方法面** `ACP_METHODS` 恰 13 项、无重复；
 //! - **白名单 ⊆ 动作面**：快照表里每个名字都必须是 v0 冻结动作的**原名**（防自创名）——
 //!   这条是**关系不变量**，**不**断言白名单成员数量（扩表时不得必红）；
@@ -16,6 +18,17 @@
 
 use contracts_check::{ACP_FORWARD_WHITELIST_SNAPSHOT, ACP_METHODS, ACTIONS};
 
+/// v0 动作面的**首版冻结基线**（11 项），来自权威来源
+/// `agent_gateway::BASELINE_ACTIONS`（`crates/agent-gateway/src/actions.rs`）——
+///
+/// 本文件**不再手写**这份清单（历史上手抄三份，`session:cancel` 补登记时漂移过）。
+///
+/// 动作面按 KICKOFF「只增不改」演进：首版冻结 11 项，后续可在**补登记**后追加
+/// （`session:cancel` 即第 12 项，见 `docs/contracts/acp-method-ledger.md` §1）。
+/// 因此只断言「**基线一项都不能少**」+「无重复」，**不锁总数**——锁死
+/// `len()==11` 会让每一次正当扩容都被判红，属第 5 轮固化的同类坑。
+use agent_gateway::BASELINE_ACTIONS;
+
 /// 无重复：任一名字出现两次即红（防复制粘贴把 13 项凑成 14 项却看着一样）。
 fn assert_unique(name: &str, items: &[&str]) {
     let mut seen = std::collections::BTreeSet::new();
@@ -23,28 +36,6 @@ fn assert_unique(name: &str, items: &[&str]) {
         assert!(seen.insert(*item), "{name} 出现重复项：{item}");
     }
 }
-
-/// v0 动作面的**下限**（首版冻结的 11 项），不是**总数**。
-///
-/// 动作面按 KICKOFF「只增不改」演进：首版冻结 11 项，后续可在**补登记**后追加
-/// （`session:cancel` 即第 12 项，见 `docs/contracts/acp-method-ledger.md` §1）。
-/// 因此这里只断言「**这 11 项一个都不能少**」+「无重复」，**不锁总数**——
-/// 锁死 `len()==11` 会让每一次正当扩容都被判红，属第 5 轮固化的同类坑。
-///
-/// 增项时**必须同步补这里**：新动作加进 `BASELINE_ACTIONS` 才算「已登记」。
-const BASELINE_ACTIONS: &[&str] = &[
-    "session:list",
-    "session:create",
-    "session:get",
-    "session:send",
-    "session:stop",
-    "session:replay",
-    "approval:respond",
-    "config:get",
-    "config:set",
-    "tool:list",
-    "sys:ping",
-];
 
 #[test]
 fn baseline_actions_are_all_present_and_unique() {
@@ -61,6 +52,27 @@ fn baseline_actions_are_all_present_and_unique() {
         BASELINE_ACTIONS.len()
     );
     assert_unique("ACTIONS", ACTIONS);
+}
+
+/// **契约侧镜像 == 权威动作面清单**（本卡新增的相等断言）。
+///
+/// 权威来源是 `agent_gateway::V0_ACTIONS`（`crates/agent-gateway/src/actions.rs`）；
+/// `contracts_check::ACTIONS` 是它的**镜像**——`agent-gateway` 在本 crate 是
+/// dev-dependency，lib 目标用不上（`Cargo.toml` 属共享区，改不动），故镜像只能
+/// 保留字面量。这条**双向差集**断言就是镜像与权威来源之间的防漂移闸门：
+/// 一侧加了动作、另一侧没跟上即红（双向都打印差集，失败时一眼看出谁多谁少）。
+#[test]
+fn contract_actions_mirror_the_authoritative_list() {
+    let mirror: std::collections::BTreeSet<&str> = ACTIONS.iter().copied().collect();
+    let authoritative: std::collections::BTreeSet<&str> =
+        agent_gateway::V0_ACTIONS.iter().copied().collect();
+
+    let missing: Vec<&&str> = authoritative.difference(&mirror).collect();
+    let extra: Vec<&&str> = mirror.difference(&authoritative).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "契约镜像与权威动作面清单不一致：权威有而镜像缺 {missing:?}；镜像有而权威缺 {extra:?}"
+    );
 }
 
 #[test]

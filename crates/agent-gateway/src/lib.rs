@@ -4,7 +4,9 @@
 // windows-sys FFI（GetNamedSecurityInfoW/SetEntriesInAclW/SetNamedSecurityInfoW），
 // 仅 windows target 编译；非 Windows 平台 forbid 照旧（与 agent-sandbox lib.rs 同款处理）。
 pub mod acp;
+pub mod actions;
 pub mod rpc;
 mod server;
 pub use acp::AcpHostHandle;
+pub use actions::{BASELINE_ACTIONS, V0_ACTIONS};
 pub use server::{GatewayConfig, GatewayHandle};

@@ -5,14 +5,17 @@
 //! 作为 ACP method（见 `crates/agent-gateway/src/acp.rs::forward_action`）。
 //!
 //! 覆盖点（对应 `docs/contracts/acp-host.md` §6）：
-//! 1. **白名单 ⊆ 冻结动作面**：表里每个名字都必须是 v0 冻结动作的**原名**，
+//! 1. **白名单 ⊆ v0 动作面**：表里每个名字都必须是 v0 动作的**原名**，
 //!    防自创名字（本卡白名单为 `["sys:ping"]`）；
 //! 2. **白名单内动作确实走旁路**：挂 `AcpHostHandle` 并注册**同名**方法 → 经
 //!    `POST /rpc` 的 `sys:ping` 由对端 ACP 应答，而不是落到既有实现；
 //! 3. **白名单外动作不受影响**：`tool:list`（不在白名单）挂 handle 后仍走既有
 //!    实现，结果与**不挂 handle** 时逐字节一致；
-//! 4. **不挂 handle 时全体动作不变**：遍历 v0 冻结动作面，断言与
+//! 4. **不挂 handle 时全体动作不变**：遍历 v0 动作面，断言与
 //!    `acp_bridge.rs::without_handle_existing_action_path_is_unchanged` 同口径。
+//!
+//! 动作面清单**引用单一来源** `agent_gateway::V0_ACTIONS`
+//! （`crates/agent-gateway/src/actions.rs`），本文件**不再手写副本**。
 //!
 //! 传输用内存构造（与 `tests/acp_bridge.rs` 同款）：`mock_transport()` 直连或
 //! `loopback_pair()` 内存回环——不 spawn 进程、不监听 0.0.0.0。
@@ -26,42 +29,28 @@ use agent_acp::message::Message;
 use agent_acp::transport::mock_transport;
 use agent_core::{provider::EchoProvider, runtime::Runtime, schema::Isolation};
 use agent_gateway::rpc::ACP_FORWARD_ACTIONS;
-use agent_gateway::{AcpHostHandle, GatewayConfig, GatewayHandle};
+use agent_gateway::{AcpHostHandle, GatewayConfig, GatewayHandle, BASELINE_ACTIONS, V0_ACTIONS};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// v0 冻结动作面（11 个）的**手写副本**，真相来源是 `AGENT-KICKOFF.md` §2 与
-/// `crates/contracts-check/src/lib.rs::ACTIONS`。
-///
-/// 为什么手写而不 `use contracts_check::ACTIONS`：`contracts-check` 依赖
-/// `agent-gateway`（方向是 `contracts-check → agent-gateway`），反向把它当
-/// dev-dependency 会形成**依赖环**；本卡边界**不许动共享区 `Cargo.toml`**，
-/// 故这里先手写、由 `frozen_action_surface_is_exactly_11` 守住「删项即红」，
-/// 待主理人开基建卡后再改为引用单一来源（已写进卡报告）。
-const FROZEN_ACTIONS: &[&str] = &[
-    "session:list",
-    "session:create",
-    "session:get",
-    "session:send",
-    "session:stop",
-    "session:replay",
-    "approval:respond",
-    "config:get",
-    "config:set",
-    "tool:list",
-    "sys:ping",
-];
+/// 无重复：任一名字出现两次即红（防复制粘贴把基线凑成 12 项却看着一样）。
+fn assert_unique(name: &str, items: &[&str]) {
+    let mut seen = std::collections::BTreeSet::new();
+    for item in items {
+        assert!(seen.insert(*item), "{name} 出现重复项：{item}");
+    }
+}
 
-// ── 1. 白名单 ⊆ 冻结动作面（防自创名字）──────────────────────────────────────
+// ── 1. 白名单 ⊆ v0 动作面（防自创名字）────────────────────────────────────────
 
-/// 白名单里每个动作都必须是 v0 冻结动作的**原名**：既挡住自创名字，也挡住
+/// 白名单里每个动作都必须是 v0 动作面的**原名**：既挡住自创名字，也挡住
 /// 借白名单偷偷塞进一个「新动作」——转发只搬运既有动作，不扩张动作面。
 #[test]
-fn every_allowlisted_action_is_a_frozen_v0_action() {
+fn every_allowlisted_action_is_a_v0_action() {
     for action in ACP_FORWARD_ACTIONS {
         assert!(
-            FROZEN_ACTIONS.contains(action),
-            "白名单动作 {action} 不在 v0 冻结动作面内——转发不得自创动作名"
+            V0_ACTIONS.contains(action),
+            "白名单动作 {action} 不在 v0 动作面内——转发不得自创动作名"
         );
     }
 }
@@ -78,14 +67,29 @@ fn allowlist_is_the_single_ping_probe() {
     );
 }
 
-/// 动作面**不缩水**：这条与 `contracts-check` 的 `ACTIONS.len() == 11` 同口径，
-/// 手写副本若被误删一项，本文件其余「遍历全体动作」的用例会静默少跑一圈。
+/// 动作面**不缩水**：首版冻结的基线每一项都必须在当前动作面内。
+///
+/// 刻意**不**写 `assert_eq!(V0_ACTIONS.len(), 12)` 之类锁死数量的断言——动作面按
+/// KICKOFF「只增不改」演进，锁死数量会让每一次正当扩充必红。要守的是**关系**：
+/// 基线 ⊆ 全集、全集无重复。
 #[test]
-fn frozen_action_surface_is_exactly_11() {
-    assert_eq!(FROZEN_ACTIONS.len(), 11, "v0 冻结动作面应为 11 个");
+fn action_surface_never_shrinks_below_the_baseline() {
+    for action in BASELINE_ACTIONS {
+        assert!(
+            V0_ACTIONS.contains(action),
+            "首版冻结动作 {action} 不在 v0 动作面内——动作面不得缩水"
+        );
+    }
+    assert!(
+        V0_ACTIONS.len() >= BASELINE_ACTIONS.len(),
+        "v0 动作面比首版冻结面还少：{} < {}",
+        V0_ACTIONS.len(),
+        BASELINE_ACTIONS.len()
+    );
+    assert_unique("V0_ACTIONS", V0_ACTIONS);
+    // 白名单非空时也顺带证明「动作面确实覆盖了白名单用到的名字」。
     for action in ACP_FORWARD_ACTIONS {
-        // 白名单非空时也顺带证明「本副本确实覆盖了白名单用到的名字」。
-        assert!(FROZEN_ACTIONS.contains(action));
+        assert!(V0_ACTIONS.contains(action));
     }
 }
 
@@ -298,10 +302,10 @@ async fn non_allowlisted_action_is_identical_with_and_without_handle() {
 
 // ── 4. 不挂 handle 时全体动作不变（与 acp_bridge.rs 同口径）────────────────
 
-/// 默认 `acp = None`：遍历 v0 冻结动作面，全部仍走既有实现——`sys:ping` 也走
+/// 默认 `acp = None`：遍历 v0 动作面，全部仍走既有实现——`sys:ping` 也走
 /// 既有路径（旁路完全不生效），未登记动作 404、非法 payload 400，一条都没变。
 #[tokio::test]
-async fn without_handle_all_frozen_actions_unchanged() {
+async fn without_handle_all_v0_actions_unchanged() {
     let (g, _dir) = start_gateway(None).await;
 
     // 建会话 → 发送 → 回放（沿用 replay_rpc / acp_bridge 的断言口径）。
@@ -318,8 +322,8 @@ async fn without_handle_all_frozen_actions_unchanged() {
     .await;
     assert_eq!(sent["code"], 0);
 
-    // 全体冻结动作在「不挂 handle」下都不该 404（未登记/未知动作才 404）。
-    for action in FROZEN_ACTIONS {
+    // 全体动作在「不挂 handle」下都不该 404（未登记/未知动作才 404）。
+    for action in V0_ACTIONS {
         let (_, resp) = gw_request(g.port(), g.token(), action, json!({"id": id})).await;
         assert_ne!(
             resp["code"], 404,

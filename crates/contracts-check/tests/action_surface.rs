@@ -37,46 +37,40 @@ fn payload_for(action: &str) -> serde_json::Value {
 /// 常量必须与「`AGENT-KICKOFF.md` 第 24 行冻结的 11 个动作 + 台账登记的追加项」
 /// **逐个**对上。
 ///
+/// 数据源是**权威清单** `agent_gateway::BASELINE_ACTIONS`（首版冻结的 11 项，
+/// `crates/agent-gateway/src/actions.rs`）与 `agent_gateway::V0_ACTIONS`
+/// （当前全集）——本文件**不再手写**副本（历史上手抄三份，`session:cancel`
+/// 补登记时漂移过）。
+///
 /// 这条挡住「常量被删项」：删掉 `ACTIONS` 里的某项会让上面的循环少跑一圈、
-/// 悄无声息地漏测。冻结项与追加项都写死在这里，任何增删都要同时改测试。
-/// 刻意**不**写 `assert_eq!(ACTIONS.len(), N)`：数量锁会让每次正当扩充必红，
-/// 下面正反两向的集合比对已同时挡住删项与私增项。
+/// 悄无声息地漏测。刻意**不**写 `assert_eq!(ACTIONS.len(), N)`：数量锁会让每次
+/// 正当扩充必红，下面正反两向的集合比对已同时挡住删项与私增项。
 #[test]
 fn frozen_action_list_matches_kickoff_and_ledger() {
     // `AGENT-KICKOFF.md` 第 24 行冻结的 11 个（`session:replay` 为
     // 2026-10-19「只增不改」追加，同见该行）。
-    let frozen_line_24 = [
-        "session:list",
-        "session:create",
-        "session:get",
-        "session:send",
-        "session:stop",
-        "session:replay",
-        "approval:respond",
-        "config:get",
-        "config:set",
-        "tool:list",
-        "sys:ping",
-    ];
-    // `08b9f40` 新增、经 `docs/contracts/acp-method-ledger.md` §1 补登记的追加项。
-    let ledger_appendix = ["session:cancel"];
-
-    for name in frozen_line_24 {
+    for name in agent_gateway::BASELINE_ACTIONS {
         assert!(
-            ACTIONS.contains(&name),
+            ACTIONS.contains(name),
             "`AGENT-KICKOFF.md` 第 24 行冻结的动作 {name} 不在 ACTIONS 里"
         );
     }
-    for name in ledger_appendix {
+    // 台账登记的追加项：权威全集里、但不在首版冻结基线里的那些。
+    let ledger_appendix: Vec<&str> = agent_gateway::V0_ACTIONS
+        .iter()
+        .copied()
+        .filter(|action| !agent_gateway::BASELINE_ACTIONS.contains(action))
+        .collect();
+    for name in &ledger_appendix {
         assert!(
-            ACTIONS.contains(&name),
+            ACTIONS.contains(name),
             "台账登记的追加动作 {name} 不在 ACTIONS 里"
         );
     }
     // 反向：常量里不得有既非第 24 行冻结、又非台账登记追加项的动作。
     for action in ACTIONS {
         assert!(
-            frozen_line_24.contains(action) || ledger_appendix.contains(action),
+            agent_gateway::V0_ACTIONS.contains(action),
             "常量里的 {action} 既未在 `AGENT-KICKOFF.md` 第 24 行登记，也不是台账登记的追加项"
         );
     }
