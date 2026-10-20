@@ -128,11 +128,17 @@ fn memory_update_midsession_reaches_next_turn_digest() {
         digest.contains("更新后的项目约定：crate=agent-core"),
         "本会话内项目记忆更新必须进下一回合摘要: {digest}"
     );
-    // 摘要同步进 system prompt（Composer 记忆段）
-    assert!(ctx.system_prompt.contains("## 记忆摘要"));
-    assert!(ctx
-        .system_prompt
-        .contains("更新后的项目约定：crate=agent-core"));
+    // 摘要同步进 system prompt（Composer 记忆四段：身份/用户记忆/项目记忆/当日日志）。
+    // 契约演进：原单段标题 `## 记忆摘要` 已按 A1 卡拆为四段，此处断言新标题。
+    assert!(
+        ctx.system_prompt.contains("## 项目记忆"),
+        "项目记忆段必须进 system prompt"
+    );
+    assert!(
+        ctx.system_prompt
+            .contains("更新后的项目约定：crate=agent-core"),
+        "本会话内项目记忆更新必须进 system prompt"
+    );
 }
 
 #[test]

@@ -6,17 +6,34 @@ use agent_prompts::{PromptMode, PromptVars};
 /// 完整变量样本：每个字段都是可 grep 的独特标记。
 pub fn full_vars() -> PromptVars {
     PromptVars {
+        product_name: "PROD-澜枢平台".into(),
+        data_folder_name: "DATADIR-.lengsuo".into(),
         ai_name: "LAN-XIAO".into(),
         user_name: "KIM-USR".into(),
         soul: "SOUL-冷静直接先验证".into(),
+        identity: "IDENT-澜枢执行助手".into(),
+        bootstrap: "BOOT-首次引导".into(),
         workspace: "WS-/home/kim/demo".into(),
         date: "DATE-2026-05-06".into(),
         user_rules: "RULE-回复不超过三行".into(),
-        memory_digest: "MEM-项目：提示词引擎；决定：plan 复用 craft 模板".into(),
+        tone_style: "TONE-简短克制".into(),
+        plugin_agent_prompt: "PLUGIN-代码专家".into(),
+        sub_agent_prompt: "SUBAGENT-评审子代理".into(),
+        response_language: "LANG-中文".into(),
+        is_windows: true,
+        feature_browser_use: true,
+        feature_computer_use: true,
+        feature_expert_management: true,
+        tool_result_presentation: "PRESENT-先结论后细节".into(),
+        artifact_dir: "ARTI-/home/kim/demo/.artifacts".into(),
+        memory_identity: "MEMID-身份层：小澜".into(),
+        memory_user: "MEMUSR-用户偏好中文提交信息".into(),
+        memory_project: "MEM-项目：提示词引擎；决定：plan 复用 craft 模板".into(),
+        memory_daily: "MEMDAY-当日：完成 PromptVars 扩容".into(),
     }
 }
 
-/// 最小变量集（记忆摘要与用户规则为空）。
+/// 最小变量集（记忆四段与用户规则为空）。
 pub fn bare_vars() -> PromptVars {
     PromptVars {
         ai_name: "小澜".into(),
@@ -24,10 +41,12 @@ pub fn bare_vars() -> PromptVars {
         soul: "冷静、直接、先验证再下结论。".into(),
         workspace: "/home/kim/work/demo".into(),
         date: "2026-05-06".into(),
-        user_rules: String::new(),
-        memory_digest: String::new(),
+        ..PromptVars::default()
     }
 }
+
+/// 记忆四段的标题（有序），空段判定与顺序断言共用同一份口径。
+pub const MEMORY_TITLES: [&str; 4] = ["## 身份", "## 用户记忆", "## 项目记忆", "## 当日日志"];
 
 pub const ALL_MODES: [PromptMode; 5] = [
     PromptMode::Quick,

@@ -217,9 +217,12 @@ fn enabled_memory_digest_reaches_provider_input_redacted() {
         digest.contains("[用户记忆] 用户偏好简洁回复"),
         "记忆注入: {digest}"
     );
+    // 契约演进：原单段 `## 记忆摘要` 已按 A1 卡拆为四段（身份/用户记忆/项目记忆/当日日志）。
+    // 兼容期 `context.rs` 把整段 digest 暂放 `memory_project`，故此处**断言内容而非段名**
+    // （只守不变量：记忆内容必须进 system prompt；段名归属由 M3 正式拆分后再锚定）。
     assert!(
-        ctx.system_prompt.contains("## 记忆摘要"),
-        "记忆摘要必须进 system prompt:\n{}",
+        ctx.system_prompt.contains("用户偏好简洁回复"),
+        "记忆内容必须进 system prompt:\n{}",
         ctx.system_prompt
     );
     assert!(ctx.system_prompt.contains("[用户记忆] 用户偏好简洁回复"));

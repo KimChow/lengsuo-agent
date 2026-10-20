@@ -15,19 +15,20 @@
 //! ```
 //! use agent_prompts::{Composer, PromptMode, PromptVars};
 //!
-//! let vars = PromptVars {
+//! let mut vars = PromptVars {
 //!     ai_name: "小澜".into(),
 //!     user_name: "Kim".into(),
 //!     soul: "冷静、直接。".into(),
 //!     workspace: "/work/demo".into(),
 //!     date: "2026-05-06".into(),
-//!     user_rules: String::new(),     // 空 → 不追加「用户自定义规则」段
-//!     memory_digest: String::new(),   // 空 → 不追加「记忆摘要」段
+//!     ..PromptVars::default() // 其余变量留空 → 整段省略
 //! };
+//! vars.memory_project = "决定：plan 复用 craft 模板".into();
 //! let prompt = Composer::build(PromptMode::Plan, &vars);
 //! assert!(prompt.contains("## 工具能力（craft · 全工具）")); // craft 段完整复用
 //! assert!(prompt.contains(Composer::plan_gate()));           // 追加规划门禁
-//! assert!(!prompt.contains("记忆摘要"));                       // 空槽位不留标题
+//! assert!(prompt.contains("## 项目记忆\n决定："));             // 非空记忆段成段
+//! assert!(!prompt.contains("## 用户记忆"));                    // 空槽位不留标题
 //! ```
 
 mod assets;
@@ -37,4 +38,4 @@ mod template;
 
 pub use assets::{asset, PromptAsset, ASSETS};
 pub use compose::Composer;
-pub use model::{PromptMode, PromptTemplate, PromptVars, Segment};
+pub use model::{PromptMode, PromptTemplate, PromptVars, Segment, PROMPT_VAR_KEYS};
