@@ -34,6 +34,7 @@
 mod assets;
 mod compose;
 mod model;
+pub mod style;
 mod template;
 mod templates;
 
@@ -42,3 +43,4 @@ pub use compose::Composer;
 pub use model::{
     Cond, PromptMode, PromptTemplate, PromptVars, Segment, PROMPT_VAR_KEYS, WORK_MODE_KEY,
 };
+pub use style::{ToneStyle, TONE_AND_STYLE_HEADER};
