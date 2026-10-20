@@ -31,6 +31,7 @@ use serde_json::json;
 
 use super::compaction;
 use super::sessions::memory_vars::TurnMemory;
+use super::sessions::ExpertDirs;
 
 /// 历史消息进上下文前的字符上限（防单条大输出顶爆模型输入；大结果走 result_ref）。
 const HISTORY_MESSAGE_CHARS: usize = 2000;
@@ -153,7 +154,7 @@ impl Runtime {
         }
     }
 
-    /// 模板变量：身份层 + 工作区 + 日期 + 用户规则（v0 空）+ 记忆四段。
+    /// 模板变量：身份层 + 工作区 + 日期 + 用户规则（v0 空）+ 记忆四段 + **专家人格**。
     ///
     /// 记忆四段（h3-memory-inject-4seg）：`memory_identity` / `memory_user` /
     /// `memory_project` / `memory_daily` 各自独立成段，**空串 ⇒ 整段省略**
@@ -173,7 +174,45 @@ impl Runtime {
             memory_user: memory.segments.user.clone(),
             memory_project: memory.segments.project.clone(),
             memory_daily: memory.segments.daily.clone(),
+            plugin_agent_prompt: self.expert_persona(session),
             ..PromptVars::default()
+        }
+    }
+
+    /// 专家人格正文（§10.2 步骤 4：按 `expert_id` 从注册表取人格，**只换注入段、
+    /// 不换上下文**）。
+    ///
+    /// 降级口径与召唤面 `Runtime::bind_expert` **同一实现**（后者含脱敏）：
+    /// 取不到（包在召唤后损坏/被删）⇒ 空串 ⇒ 模板整段省略，**不动会话状态**——
+    /// `expert_id` 是召唤时已校验过的状态，组装期不回改。
+    ///
+    /// **只填一处**：卡面指定的人格注入点是既有 `plugin_agent_prompt`（expert 模板条件段
+    /// `## 专家人格`，空槽不留标题）；`expert_persona`（专用槽）保持空，**不改**
+    /// `agent-prompts` 一行。若两处同填，模板会把同一段人格渲染两次，来源不可辨。
+    /// `docs/expert-prompts-status.md` §1 建议「只填专用槽」——二者张力已记入本卡状态
+    /// 文档「偏离清单」，切换注入点只需改这一行。
+    fn expert_persona(&self, session: &Session) -> String {
+        let Some(expert_id) = session.expert_id.as_deref() else {
+            return String::new();
+        };
+        let dirs = ExpertDirs::for_session(&session.workspace_root);
+        match self.bind_expert(&dirs, expert_id) {
+            Ok(target) => target.persona,
+            Err(e) => {
+                // 降级：不注入人格段（不阻断回合）；会话状态不回改。只留一条 warning
+                // （与 `create_session` 记忆组装失败同口径），不阻断、不改会话。
+                let _ = self.emit(
+                    session,
+                    "warning",
+                    json!({
+                        "kind": "expert_persona_unavailable",
+                        "expertId": expert_id,
+                        "code": e.code(),
+                        "reason": e.to_string(),
+                    }),
+                );
+                String::new()
+            }
         }
     }
 

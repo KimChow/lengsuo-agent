@@ -320,6 +320,7 @@ fn session_run_status_field_is_additive_and_optional() {
         last_seq: 0,
         memory_digest: None,
         run_status: None,
+        expert_id: None,
     };
     // 旧日志（无 runStatus）仍能解码为 None；既有 status 字段原样保留。
     let back: Session = serde_json::to_value(&session)
