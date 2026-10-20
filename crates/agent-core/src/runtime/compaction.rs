@@ -39,6 +39,7 @@
 //!    （本卡不做，见卡面 E）。本卡以「最后一条 assistant 消息」为 measured 锚，
 //!    native checkpoint（无 `<summary>` 的包裹段）比它新时判为不可测 ⇒ 不压。
 
+use crate::provider::CompactionCapability;
 use crate::schema::{Message, Role};
 
 pub mod prompt;
@@ -116,6 +117,14 @@ pub enum CompactionError {
     Failed { message: String },
     /// 压缩被中断（`compaction.interrupted`）。
     Interrupted { message: String },
+    /// provider 未声明 native 压缩能力（`native_unsupported`）。
+    ///
+    /// 唯一允许的反应是 fail-closed；**不得**静默退回摘要路径。
+    NativeUnsupported,
+    /// provider 已声明能力，但本仓尚未实现 native 压缩（`native_not_implemented`）。
+    ///
+    /// 声明不等于可用：provenance 校验与端点绑定是后续卡。
+    NativeNotImplemented,
 }
 
 impl CompactionError {
@@ -125,6 +134,8 @@ impl CompactionError {
             CompactionError::Unavailable { .. } => "compaction.unavailable",
             CompactionError::Failed { .. } => "compaction.failed",
             CompactionError::Interrupted { .. } => "compaction.interrupted",
+            CompactionError::NativeUnsupported => "native_unsupported",
+            CompactionError::NativeNotImplemented => "native_not_implemented",
         }
     }
 
@@ -134,6 +145,12 @@ impl CompactionError {
             CompactionError::Unavailable { message }
             | CompactionError::Failed { message }
             | CompactionError::Interrupted { message } => message,
+            CompactionError::NativeUnsupported => {
+                "provider 不支持 native 压缩（能力未声明，已拒绝）"
+            }
+            CompactionError::NativeNotImplemented => {
+                "native 压缩尚未实现（provider 已声明，本仓拒绝调用）"
+            }
         }
     }
 }
@@ -145,6 +162,43 @@ impl std::fmt::Display for CompactionError {
 }
 
 impl std::error::Error for CompactionError {}
+
+/// 一次 native 压缩请求（骨架：只描述来源，不做任何解析）。
+///
+/// native 产物是与产生它的端点绑定的加密上下文，**不可跨 provider 重放**，
+/// 故请求必须携带 provider 标识。能力档另由 [`native_compact`] 的第一个参数
+/// 显式传入并以它为准，避免仅凭请求结构自填 `Declared` 就绕开门禁。
+#[derive(Debug)]
+pub struct NativeCompactionRequest<'a> {
+    /// 产生/重放该上下文的 provider 标识（端点绑定是后续卡）。
+    pub provider_id: &'a str,
+    /// 会话历史（只读；本仓不改写、不解析）。
+    pub history: &'a [Message],
+    /// 调用方随请求声明的能力档（门禁以 [`native_compact`] 的参数为准）。
+    pub capability: CompactionCapability,
+}
+
+/// native 压缩入口（骨架，**两档均 fail-closed**）。
+///
+/// 本仓只做能力判定，不做 provider 侧压缩：
+///
+/// | 能力档 | 结果 |
+/// |---|---|
+/// | [`CompactionCapability::Unsupported`] | [`CompactionError::NativeUnsupported`] |
+/// | [`CompactionCapability::Declared`] | [`CompactionError::NativeNotImplemented`] |
+///
+/// **永不**返回 `Ok`，也**永不**静默退回摘要路径（是否退回由调用方决定）。
+/// 请求里的 `history` / `provider_id` 目前只用于描述来源，不做解析或校验。
+pub fn native_compact(
+    capability: CompactionCapability,
+    request: &NativeCompactionRequest<'_>,
+) -> Result<Vec<Message>, CompactionError> {
+    let _ = request;
+    match capability {
+        CompactionCapability::Unsupported => Err(CompactionError::NativeUnsupported),
+        CompactionCapability::Declared => Err(CompactionError::NativeNotImplemented),
+    }
+}
 
 /// 压缩设置（照抄 `compaction.ts:41-47` 的 `Settings`）。
 #[derive(Debug, Clone, PartialEq, Eq)]

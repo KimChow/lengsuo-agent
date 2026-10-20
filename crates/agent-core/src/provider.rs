@@ -60,6 +60,21 @@ pub struct StepOptions {
     pub tool_choice: ToolChoice,
 }
 
+/// provider 侧的压缩能力（本仓 v1 **只有声明，没有实现**）。
+///
+/// `native` 压缩的产物是 provider 侧生成的加密上下文，**不可跨 provider 重放**；
+/// 本仓尚未具备 provenance 校验与端点绑定，因此这里只区分「没声明」与
+/// 「声明了但尚不可用」，两档在 [`crate::runtime::compaction::native_compact`]
+/// 里都 fail-closed。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompactionCapability {
+    /// 不支持 provider 侧压缩（默认；所有现有 provider 都应是这一档）。
+    #[default]
+    Unsupported,
+    /// 声明支持，但本仓尚无 provenance 校验与端点绑定 ⇒ **调用一律拒绝**。
+    Declared,
+}
+
 /// 模型/回合提供方。
 pub trait Provider: Send + Sync {
     /// 针对会话最新一条用户输入产出步骤序列（echo provider 返回固定两步）。
@@ -94,6 +109,17 @@ pub trait Provider: Send + Sync {
     ) -> Result<Vec<ProviderStep>, CoreError> {
         let _ = options;
         self.next_steps_with_context(context)
+    }
+
+    /// provider 侧的压缩能力声明。
+    ///
+    /// 默认 [`CompactionCapability::Unsupported`]；实现方可覆写为
+    /// [`CompactionCapability::Declared`]，但本仓尚无 provenance 校验与端点绑定，
+    /// **不会**因此被允许执行 native 压缩（见
+    /// [`crate::runtime::compaction::native_compact`]）。带默认实现是为了让
+    /// 既有 `impl Provider` 零改动。
+    fn compaction_capability(&self) -> CompactionCapability {
+        CompactionCapability::Unsupported
     }
 }
 
