@@ -54,8 +54,7 @@ impl RunStatus {
         // wb 源注释：「已终态则状态不变只清 pendingInputKind」——终态转移本身会清
         // pendingInputKind（终态不挂起输入），所以终态下这两条事件的净效果就是
         // 「逐字段不变」。
-        if self.is_terminal() && matches!(event, RunEvent::AwaitingInput | RunEvent::InputResolved)
-        {
+        if self.is_protected(event) {
             return;
         }
         match event {
@@ -116,6 +115,15 @@ impl RunStatus {
     pub fn is_terminal(&self) -> bool {
         self.terminal_outcome.is_some()
             || matches!(self.run_state, RunState::Errored | RunState::Terminated)
+    }
+
+    /// 规则 A26-1 的**保护谓词**：这条事件在当前态下是否被「原样返回」拦下。
+    ///
+    /// 终态会话收到 `awaiting_input` / `input_resolved` ⇒ 状态逐字段不变
+    /// （挂起输入打不醒死会话）。落盘侧据此判定「这次调用**没有**发生迁移」——
+    /// 没有迁移就不写文件（`persist.rs` 的 `persist_transition`）。
+    pub fn is_protected(&self, event: RunEvent) -> bool {
+        self.is_terminal() && matches!(event, RunEvent::AwaitingInput | RunEvent::InputResolved)
     }
 
     /// 派生显示状态（wb 26 册 §1.3，按优先级序逐条判定）。
