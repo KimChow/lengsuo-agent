@@ -1,6 +1,6 @@
 //! 已安装技能的按需加载安全入口：常驻目录只含元数据，正文只在显式 `load()` 返回。
 //!
-//! 三道门（全部 fail-closed，不静默降级、不返回部分结果）：
+//! 四道门（全部 fail-closed，不静默降级、不返回部分结果）：
 //! 1. **授权目录边界**：根目录与 `SKILL.md` 都先 canonicalize，再判定是否落在边界内。
 //!    因此指向边界外的符号链接（目录或文件）、以及带 `..` 的注册路径，都不能把边界外
 //!    内容当成技能返回；根目录本身不可用时以 `Boundary` 显式失败。
@@ -8,18 +8,26 @@
 //!    加载同样被拒（`Disabled`），不给「只是列表里藏起来」的绕过面。
 //! 3. **调用来源**：`disable-model-invocation: true` 只允许用户显式触发；
 //!    `user-invocable: false` 不允许用户菜单触发。不符来源即 `NotInvocable`。
+//! 4. **安全审计**：`load()` 在返回正文前跑一遍审计五步（见 [`crate::audit`]，
+//!    依据 参考客户端 09 册 §5.1 与 18 册 §9.1）。**P0 判定 ⇒ 拒绝加载**
+//!    （fail-closed，正文不出仓）；P1/P2 不阻断，审计报告随 [`LoadedSkill`]
+//!    一起返回，供宿主提示与确认。
 //!
 //! 工具集：`load()` 只返回技能声明与宿主已授权工具集的**交集**（见 `SkillPolicy`），
 //! 技能自报内容永远不可能扩大宿主授权；无法可靠解析的限制字段降级为空工具集，
 //! 绝不按「无限工具」处理。
 //!
-//! 本模块不实现安装、下载、市场或内容扫描，也不做提示词注入。
+//! 常驻目录 `list()` 只含元数据、不含正文，**不审计**——审计是加载时的事。
+//!
+//! 本模块不实现安装、下载、市场，也不做提示词注入。
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use crate::audit::{self, AuditReport, RiskLevel};
 use crate::error::AccessError;
+use crate::error::SkillsError;
 use crate::parse::{parse_skill_with_policy, SKILL_FILE};
 use crate::policy::{InvocationSource, SkillPolicy};
 use crate::registry::first_level_skill_dirs;
@@ -38,7 +46,7 @@ pub struct SkillSummary {
     pub policy: SkillPolicy,
 }
 
-/// 一次显式加载的结果：正文全文 + 生效工具集。
+/// 一次显式加载的结果：正文全文 + 生效工具集 + 审计报告。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedSkill {
     /// 技能名。
@@ -53,6 +61,8 @@ pub struct LoadedSkill {
     pub effective_tools: Vec<String>,
     /// 该技能的常驻元数据（供上层对照展示）。
     pub summary: SkillSummary,
+    /// 加载前的安全审计报告：P0 技能不会被加载到，因此这里的级别只会是 P1/P2。
+    pub audit: AuditReport,
 }
 
 /// 已安装技能的常驻目录 + 按需加载入口。
@@ -105,6 +115,8 @@ impl SkillCatalog {
     }
 
     /// 按需加载正文：显式指定名字与调用来源，并给出宿主已授权工具集。
+    ///
+    /// 加载前先跑安全审计五步：P0 判定 ⇒ 拒绝加载（fail-closed）。
     pub fn load(
         &self,
         name: &str,
@@ -126,6 +138,16 @@ impl SkillCatalog {
                 origin: source_label(source),
             });
         }
+        // 第四道门：安全审计。审计对象是技能目录（正文 + 全部捆绑文件）。
+        // P0 ⇒ 拒绝加载，正文不出仓；P1/P2 ⇒ 放行，报告随结果返回。
+        let skill_dir = skill.path.parent().unwrap_or(&skill.path).to_path_buf();
+        let report = audit::audit_skill(&skill_dir, Some(host_tools));
+        if report.level == RiskLevel::P0 {
+            return Err(AccessError::Skills(SkillsError::Malformed {
+                path: skill.path.clone(),
+                reason: format!("安全审计 P0，拒绝加载: {}", report.summary()),
+            }));
+        }
         let summary = SkillSummary {
             name: skill.name.clone(),
             description: skill.description.clone(),
@@ -139,6 +161,7 @@ impl SkillCatalog {
             description: summary.description.clone(),
             path: summary.path.clone(),
             summary,
+            audit: report,
         })
     }
 
