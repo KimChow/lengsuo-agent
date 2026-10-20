@@ -54,8 +54,20 @@ pub struct PromptVars {
     pub soul: String,
     /// 身份层内容（IDENTITY.md）。
     pub identity: String,
-    /// 引导内容（BOOTSTRAP.md）；onboarding 分支使用，本卡仅作数据面。
+    /// 用户资料正文（USER.md）；`user_name` 只是称呼，不是档案。
+    pub user: String,
+    /// 引导内容（BOOTSTRAP.md）；仅 onboarding 分支渲染（`templates/identity.rs`）。
     pub bootstrap: String,
+    /// 身份分支：`"onboarding"`（初始引导）或 `"normal"`（常态）。
+    pub identity_mode: String,
+    /// SOUL.md 路径（身份段 `Path:` 行）。
+    pub soul_path: String,
+    /// IDENTITY.md 路径。
+    pub identity_path: String,
+    /// USER.md 路径。
+    pub user_path: String,
+    /// BOOTSTRAP.md 路径（仅 onboarding 分支）。
+    pub bootstrap_path: String,
     /// 工作区路径或描述。
     pub workspace: String,
     /// 日期文本（来源由调用方决定，保证输出确定性）。
@@ -106,14 +118,20 @@ pub struct PromptVars {
 ///
 /// 布尔字段以 `"true"` / `"false"` 形式可被 `{{key}}` 替换；测试用它遍历断言
 /// 「每个键都有值」，避免新增字段时漏挂 key。
-pub const PROMPT_VAR_KEYS: [&str; 25] = [
+pub const PROMPT_VAR_KEYS: [&str; 31] = [
     "product_name",
     "data_folder_name",
     "ai_name",
     "user_name",
     "soul",
     "identity",
+    "user",
     "bootstrap",
+    "identity_mode",
+    "soul_path",
+    "identity_path",
+    "user_path",
+    "bootstrap_path",
     "workspace",
     "date",
     "user_rules",
@@ -144,7 +162,13 @@ impl PromptVars {
             "user_name" => &self.user_name,
             "soul" => &self.soul,
             "identity" => &self.identity,
+            "user" => &self.user,
             "bootstrap" => &self.bootstrap,
+            "identity_mode" => &self.identity_mode,
+            "soul_path" => &self.soul_path,
+            "identity_path" => &self.identity_path,
+            "user_path" => &self.user_path,
+            "bootstrap_path" => &self.bootstrap_path,
             "workspace" => &self.workspace,
             "date" => &self.date,
             "user_rules" => &self.user_rules,

@@ -37,6 +37,31 @@ fn every_declared_key_is_resolvable() {
     assert_eq!(vars.get("no_such_key"), None);
 }
 
+/// 身份注入的 6 个新键：既在 `PROMPT_VAR_KEYS` 全集里，也有 `get()` 取值口。
+#[test]
+fn identity_keys_are_declared_and_resolvable() {
+    let vars = full_vars();
+    let expected = [
+        ("user", "USER-用户档案：偏好中文提交信息"),
+        ("identity_mode", "onboarding"),
+        ("soul_path", "/data/user-1/SOUL.md"),
+        ("identity_path", "/data/user-1/IDENTITY.md"),
+        ("user_path", "/data/user-1/USER.md"),
+        ("bootstrap_path", "/data/user-1/BOOTSTRAP.md"),
+    ];
+    for (key, value) in expected {
+        assert!(
+            PROMPT_VAR_KEYS.contains(&key),
+            "身份键 {key} 未登记进 PROMPT_VAR_KEYS"
+        );
+        assert_eq!(vars.get(key), Some(value), "键 {key} 取值口不对");
+    }
+    // 定长键表长度随字段同步扩展（漏加键 ⇒ 「每个声明键都可解析」先红）。
+    assert_eq!(PROMPT_VAR_KEYS.len(), 31);
+    // 默认值：`identity_mode` 空串（不默认 onboarding，分支由调用方显式声明）。
+    assert_eq!(PromptVars::default().get("identity_mode"), Some(""));
+}
+
 /// `{{key}}` 文本段里每个已声明键都能被替换（不留花括号）。
 #[test]
 fn declared_keys_are_substitutable_in_text_segments() {
