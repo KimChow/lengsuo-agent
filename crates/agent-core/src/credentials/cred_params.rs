@@ -28,12 +28,11 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::credentials::{CredentialError, StoreCredentialResolver, CRED_REF_SCHEME};
+use crate::credentials::{
+    is_hyphenated_uuid_text, CredentialError, StoreCredentialResolver, CRED_REF_SCHEME,
+};
 use crate::host::CredentialResolver;
 use crate::r#loop::ToolExecutor;
-
-/// 引用 id 的文本长度（带连字符的 UUID 文本形态）。
-const REF_ID_TEXT_LEN: usize = 36;
 
 /// 一次引用替换的产物。
 #[derive(Debug, Clone)]
@@ -104,10 +103,9 @@ fn substitute_text(
         let start = cursor + found;
         out.push_str(&text[cursor..start]);
         let token_start = start + CRED_REF_SCHEME.len();
+        // 形态非法 ⇒ 显式错误（fail-closed）：疑似引用**不得**当普通文本放过。
         let Some(end) = ref_token_end(text, token_start) else {
-            out.push_str(&text[start..]);
-            cursor = text.len();
-            break;
+            return Err(CredentialError::InvalidReference);
         };
         let reference = &text[start..end];
         let plaintext = resolve(reference)?;
@@ -152,7 +150,7 @@ fn collect_into(value: &Value, out: &mut Vec<String>) {
                 let start = cursor + found;
                 let token_start = start + CRED_REF_SCHEME.len();
                 let Some(end) = ref_token_end(text, token_start) else {
-                    // 形态非法：不是合法引用，不收集（解析时才会显式报错）。
+                    // 形态非法：不是合法引用，不收集（解析路径会显式报错）。
                     break;
                 };
                 let reference = text[start..end].to_string();
@@ -178,48 +176,27 @@ fn collect_into(value: &Value, out: &mut Vec<String>) {
 
 /// 定位引用记号的结束位置；形态非法返回 `None`。
 ///
-/// 合法形态：`text[at..]` 前 36 字符是连字符 UUID 文本，且其后**不得**再跟
-/// 可延续 UUID 的字符（十六进制数字或 `-`）——多一位即视为形态非法。
+/// 合法形态：`text[at..]` 的**最大连续**「十六进制数字 / 连字符」段**恰好**
+/// 是 36 字符连字符 UUID 文本（`8-4-4-4-12`）。
+///
+/// 口径说明：多一位（如尾随一个十六进制数字或 `-`）、少一位、含非法字符
+/// 一律判**形态非法** —— 疑似引用宁可显式报错，也不当普通文本放过
+/// （fail-closed；与 `parse_ref_id` 的判据同源）。
 fn ref_token_end(text: &str, at: usize) -> Option<usize> {
     let rest = text.get(at..)?;
-    if rest.len() < REF_ID_TEXT_LEN {
+    let run_len = rest
+        .find(|ch: char| !is_ref_text_char(ch))
+        .unwrap_or(rest.len());
+    let run = rest.get(..run_len)?;
+    if !is_hyphenated_uuid_text(run) {
         return None;
     }
-    let token = rest.get(..REF_ID_TEXT_LEN)?;
-    if !is_hyphenated_uuid(token) {
-        return None;
-    }
-    let next = rest
-        .get(REF_ID_TEXT_LEN..)
-        .and_then(|tail| tail.chars().next());
-    if let Some(next) = next {
-        if next.is_ascii_hexdigit() || next == '-' {
-            return None;
-        }
-    }
-    Some(at + REF_ID_TEXT_LEN)
+    Some(at + run_len)
 }
 
-/// 36 字符连字符 UUID 文本形态校验（`8-4-4-4-12` 十六进制）。
-fn is_hyphenated_uuid(token: &str) -> bool {
-    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
-    let mut rest = token;
-    for (index, len) in GROUPS.iter().enumerate() {
-        if index > 0 {
-            let Some(stripped) = rest.strip_prefix('-') else {
-                return false;
-            };
-            rest = stripped;
-        }
-        let Some(head) = rest.get(..*len) else {
-            return false;
-        };
-        if !head.chars().all(|ch| ch.is_ascii_hexdigit()) {
-            return false;
-        }
-        rest = rest.get(*len..).unwrap_or_default();
-    }
-    rest.is_empty()
+/// 引用记号里 UUID 文本可用的字符集（十六进制数字与连字符）。
+fn is_ref_text_char(ch: char) -> bool {
+    ch.is_ascii_hexdigit() || ch == '-'
 }
 
 /// 把结果里的明文换回引用形态（工具回显了明文时兜底）。

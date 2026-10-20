@@ -144,8 +144,39 @@ pub fn parse_ref_id(reference: &str) -> Result<RefId, CredentialError> {
     let rest = reference
         .strip_prefix(CRED_REF_SCHEME)
         .ok_or(CredentialError::InvalidReference)?;
+    // 只认「scheme + 36 字符连字符 UUID 文本」这一种形态：多一位少一位都不是引用，
+    // 绝不「截断后凑合解析」。
+    if !is_hyphenated_uuid_text(rest) {
+        return Err(CredentialError::InvalidReference);
+    }
     let uuid = Uuid::parse_str(rest).map_err(|_| CredentialError::InvalidReference)?;
     Ok(RefId::from_uuid(uuid))
+}
+
+/// 36 字符连字符 UUID 文本形态校验（`8-4-4-4-12` 十六进制）。
+///
+/// **只认这一种形态**：32 字符无连字符形式、`urn:uuid:` 前缀形式、花括号形式
+/// 一律不收（`Uuid::parse_str` 收那些，但它们不是本仓的引用文本形态）。
+/// 判据单点定义 here：`parse_ref_id` 与参数面扫描器共用同一份，不写两套。
+pub(crate) fn is_hyphenated_uuid_text(token: &str) -> bool {
+    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
+    let mut rest = token;
+    for (index, len) in GROUPS.iter().enumerate() {
+        if index > 0 {
+            let Some(stripped) = rest.strip_prefix('-') else {
+                return false;
+            };
+            rest = stripped;
+        }
+        let Some(head) = rest.get(..*len) else {
+            return false;
+        };
+        if !head.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return false;
+        }
+        rest = rest.get(*len..).unwrap_or_default();
+    }
+    rest.is_empty()
 }
 
 /// 把 `credential_ref::SecretStore` 适配成宿主注入的凭据解析口。
