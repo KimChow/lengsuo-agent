@@ -2,6 +2,7 @@
 //!
 //! 规则：键名族（password/pwd/pin/secret/token/*key/authorization/cookie/credential）
 //! 紧跟分隔符与值时，只替换值部分，键名与周边文本保留以便排障；PEM 私钥块整体替换。
+//! 另按 codex sanitizer 补三条无键名的形态规则（Bearer / sk- / AKIA），按位置统一替换。
 //! 凭据值不得进入模型上下文、事件流或日志。值短于 4 字符不替换，避免误伤普通词句。
 
 use regex::Regex;
@@ -23,8 +24,21 @@ const SEP: &str = r#"["']?\s*[:=]\s*["']?"#;
 /// 认证方案前缀：`Authorization: Bearer x` 里方案名保留，值替换。
 const SCHEME: &str = r"(?:Bearer|Basic|Digest|Token)[ ]{1,}";
 
+/// `SCHEME` 的方案名（幂等守卫用）。
+const SCHEME_NAMES: [&str; 4] = ["Bearer", "Basic", "Digest", "Token"];
+
 /// 值：到空白/引号/逗号/分号/星号为止（星号排除使已脱敏文本不再命中，保证幂等）。
 const VALUE: &str = r#"[^\s\x22',;*]{4,}"#;
+
+/// 裸 OpenAI 风格密钥（codex `secrets/src/sanitizer.rs:4`，原样照抄）。
+const OPENAI_KEY_PATTERN: &str = r"sk-[A-Za-z0-9]{20,}";
+
+/// AWS access key id（codex `secrets/src/sanitizer.rs:5-6`，原样照抄）。
+const AWS_ACCESS_KEY_ID_PATTERN: &str = r"\bAKIA[0-9A-Z]{16}\b";
+
+/// Bearer token（codex `secrets/src/sanitizer.rs:7-8`）。
+/// 字符类同样不含 `*`，因此对已脱敏的 `Bearer ***` 不再命中。
+const BEARER_TOKEN_PATTERN: &str = r"(?i:\bBearer)[ \t]+[A-Za-z0-9._~+/-]{16,}=*";
 
 /// PEM 私钥块（含未闭合尾部的截断情形）。
 const PEM_PATTERN: &str =
@@ -42,13 +56,26 @@ impl Redactor {
         Self { _priv: () }
     }
 
-    /// 对一段文本脱敏：私钥块优先，其次键值对的值部分。
+    /// 对一段文本脱敏：形态规则（Bearer → sk- → AKIA）先登记，
+    /// 其次私钥块，最后键值对的值部分；重叠时按起点与登记顺序取先者。
     pub fn redact_str(&self, input: &str) -> String {
         if input.is_empty() {
             return String::new();
         }
         let rules = rules();
         let mut edits: Vec<(usize, usize, String)> = Vec::new();
+        // codex sanitizer.rs:16-18 的顺序：Bearer → sk- → AKIA。
+        // 先登记使同一位置上的形态规则优先于键值规则（如
+        // `authorization: bEaReR\tabc...` 由 Bearer 规则整段替换）。
+        for m in rules.bearer.find_iter(input) {
+            edits.push((m.start(), m.end(), format!("Bearer {MASK}")));
+        }
+        for m in rules.openai_key.find_iter(input) {
+            edits.push((m.start(), m.end(), MASK.to_string()));
+        }
+        for m in rules.aws_access_key_id.find_iter(input) {
+            edits.push((m.start(), m.end(), MASK.to_string()));
+        }
         for m in rules.pem.find_iter(input) {
             edits.push((m.start(), m.end(), PEM_MASK.to_string()));
         }
@@ -56,6 +83,17 @@ impl Redactor {
             let (Some(all), Some(val)) = (cap.get(0), cap.get(1)) else {
                 continue;
             };
+            // 幂等守卫：`Bearer ***` 里 SCHEME 因星号无法匹配，VALUE 会回退吃掉
+            // 方案名；跳过「方案名 + 空白 + MASK」，使二次脱敏输出不变。
+            let value_is_scheme = SCHEME_NAMES
+                .iter()
+                .any(|name| val.as_str().eq_ignore_ascii_case(name));
+            let followed_by_mask = input[val.end()..]
+                .trim_start_matches([' ', '\t'])
+                .starts_with(MASK);
+            if value_is_scheme && followed_by_mask {
+                continue;
+            }
             // 保留键名与分隔符，只替换值部分
             edits.push((
                 all.start(),
@@ -138,6 +176,9 @@ struct Rules {
     key_value: Regex,
     pem: Regex,
     key_name: Regex,
+    bearer: Regex,
+    openai_key: Regex,
+    aws_access_key_id: Regex,
 }
 
 fn rules() -> &'static Rules {
@@ -147,6 +188,9 @@ fn rules() -> &'static Rules {
             .expect("脱敏键值正则必须可编译"),
         pem: Regex::new(PEM_PATTERN).expect("私钥块正则必须可编译"),
         key_name: Regex::new(&format!("(?i)^{KEY_NAMES}$")).expect("键名正则必须可编译"),
+        bearer: Regex::new(BEARER_TOKEN_PATTERN).expect("Bearer token 正则必须可编译"),
+        openai_key: Regex::new(OPENAI_KEY_PATTERN).expect("sk- 形态正则必须可编译"),
+        aws_access_key_id: Regex::new(AWS_ACCESS_KEY_ID_PATTERN).expect("AKIA 形态正则必须可编译"),
     })
 }
 
