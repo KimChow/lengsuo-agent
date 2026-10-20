@@ -1,7 +1,8 @@
 //! ACP 方法面台账断言（W2 · lane proto）。
 //!
 //! 把 `docs/contracts/acp-method-ledger.md` 的清单变成可执行断言：
-//! - **动作面** `ACTIONS` 恰 11 项、无重复（与 `action_surface.rs` 同口径）；
+//! - **动作面** `ACTIONS` **含首版冻结的 11 项且无重复**（与 `action_surface.rs` 同口径；
+//!   只守「不缩水」关系、不锁总数——扩容是正当演进，见 `BASELINE_ACTIONS` 注释）；
 //! - **方法面** `ACP_METHODS` 恰 13 项、无重复；
 //! - **白名单 ⊆ 动作面**：快照表里每个名字都必须是 v0 冻结动作的**原名**（防自创名）——
 //!   这条是**关系不变量**，**不**断言白名单成员数量（扩表时不得必红）；
@@ -23,9 +24,42 @@ fn assert_unique(name: &str, items: &[&str]) {
     }
 }
 
+/// v0 动作面的**下限**（首版冻结的 11 项），不是**总数**。
+///
+/// 动作面按 KICKOFF「只增不改」演进：首版冻结 11 项，后续可在**补登记**后追加
+/// （`session:cancel` 即第 12 项，见 `docs/contracts/acp-method-ledger.md` §1）。
+/// 因此这里只断言「**这 11 项一个都不能少**」+「无重复」，**不锁总数**——
+/// 锁死 `len()==11` 会让每一次正当扩容都被判红，属第 5 轮固化的同类坑。
+///
+/// 增项时**必须同步补这里**：新动作加进 `BASELINE_ACTIONS` 才算「已登记」。
+const BASELINE_ACTIONS: &[&str] = &[
+    "session:list",
+    "session:create",
+    "session:get",
+    "session:send",
+    "session:stop",
+    "session:replay",
+    "approval:respond",
+    "config:get",
+    "config:set",
+    "tool:list",
+    "sys:ping",
+];
+
 #[test]
-fn action_surface_is_exactly_11_unique() {
-    assert_eq!(ACTIONS.len(), 11, "v0 动作面应为 11 个");
+fn baseline_actions_are_all_present_and_unique() {
+    for action in BASELINE_ACTIONS {
+        assert!(
+            ACTIONS.contains(action),
+            "首版冻结动作 {action} 不在 ACTIONS 里——动作面不得缩水"
+        );
+    }
+    assert!(
+        ACTIONS.len() >= BASELINE_ACTIONS.len(),
+        "ACTIONS 比首版冻结面还少：{} < {}",
+        ACTIONS.len(),
+        BASELINE_ACTIONS.len()
+    );
     assert_unique("ACTIONS", ACTIONS);
 }
 
