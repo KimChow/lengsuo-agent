@@ -28,10 +28,7 @@ use credential_ref::{CredentialRef, FileStore, MemoryStore, Plaintext, Scope, Se
 
 /// 引用记号的文本形态：`cred_ref://` + 连字符 UUID。
 fn cred_ref_of(reference: &CredentialRef) -> String {
-    format!(
-        "cred_ref://{}",
-        reference.id().as_uuid()
-    )
+    format!("cred_ref://{}", reference.id().as_uuid())
 }
 
 /// 造一条已入库的凭据，返回（引用, 明文）。
@@ -71,7 +68,11 @@ struct SharedExecutor(Arc<RecordingExecutor>);
 
 impl ToolExecutor for SharedExecutor {
     fn execute(&self, name: &str, args: &Value) -> Result<Value, String> {
-        self.0.calls.lock().expect("锁").push((name.to_string(), args.clone()));
+        self.0
+            .calls
+            .lock()
+            .expect("锁")
+            .push((name.to_string(), args.clone()));
         Ok(json!({ "ok": true }))
     }
 }
@@ -106,7 +107,11 @@ impl ToolExecutor for SharedEcho {
 struct FailingStore;
 
 impl SecretStore for FailingStore {
-    fn put(&self, _reference: &CredentialRef, _plaintext: &Plaintext) -> Result<(), credential_ref::StoreError> {
+    fn put(
+        &self,
+        _reference: &CredentialRef,
+        _plaintext: &Plaintext,
+    ) -> Result<(), credential_ref::StoreError> {
         Ok(())
     }
 
@@ -137,7 +142,8 @@ fn valid_ref_resolves_to_plaintext_in_params_only() {
     let resolved = resolve_cred_params_typed(&args, &resolver).expect("解析成功");
 
     assert_eq!(
-        resolved.args["token"], json!("s3cret-token"),
+        resolved.args["token"],
+        json!("s3cret-token"),
         "工具参数里必须是明文"
     );
     assert_eq!(resolved.args["path"], json!("a.txt"), "非凭据参数原样保留");
@@ -185,7 +191,8 @@ fn nested_and_array_params_are_replaced_but_keys_are_not() {
     assert_eq!(resolved.args["list"][1], json!("plain"));
     assert_eq!(resolved.args["deep"]["inner"]["cred"], json!("v"));
     assert_eq!(
-        resolved.args[&token], json!("键名不替换"),
+        resolved.args[&token],
+        json!("键名不替换"),
         "对象键名是 schema 名字，不是值：不得替换"
     );
 }
@@ -230,7 +237,10 @@ fn unknown_ref_fails_closed_without_executing_tool() {
     let error = wrapper
         .execute("http.fetch", &json!({ "token": missing }))
         .expect_err("不存在的引用必须失败");
-    assert!(error.contains("not_found"), "必须是显式的未找到错误: {error}");
+    assert!(
+        error.contains("not_found"),
+        "必须是显式的未找到错误: {error}"
+    );
     assert!(executor.calls().is_empty(), "工具必须零调用");
 }
 
@@ -294,10 +304,7 @@ fn file_store_rejects_wrong_passphrase() {
 
     // 换错误口令重开同一文件 ⇒ 口令错（fail-closed，不当空库）。
     let error = FileStore::open(&path, "wrong-passphrase").expect_err("口令错必须失败");
-    assert!(matches!(
-        error,
-        credential_ref::StoreError::WrongPassphrase
-    ));
+    assert!(matches!(error, credential_ref::StoreError::WrongPassphrase));
 }
 
 // ---------------- 契约 5：明文不出现在事件与日志中 ----------------
@@ -325,10 +332,7 @@ fn echoed_plaintext_is_scrubbed_back_to_ref() {
         !rendered.contains("echoed-secret"),
         "明文不得出现在工具结果里: {rendered}"
     );
-    assert!(
-        rendered.contains(&token),
-        "结果里应是引用形态: {rendered}"
-    );
+    assert!(rendered.contains(&token), "结果里应是引用形态: {rendered}");
     // 工具确实收到了明文（执行面拿到真值）。
     assert_eq!(
         executor.calls()[0].1["token"],
@@ -359,8 +363,8 @@ fn redactor_is_second_line_of_defense() {
     );
 
     // 敏感键名下：值整体替换（连引用都不回显），明文更不可能出现。
-    let sensitive = agent_core::Redactor::default_v0()
-        .redact_json(&json!({ "token": token.clone() }));
+    let sensitive =
+        agent_core::Redactor::default_v0().redact_json(&json!({ "token": token.clone() }));
     assert!(!sensitive.to_string().contains("token-abcdefghijklmnop"));
 
     // 第二道防线：即使工具把明文吐回结果面，脱敏器也拦得住「token=明文」形态。
@@ -370,7 +374,9 @@ fn redactor_is_second_line_of_defense() {
 
     // 解析口仍能取到真值（脱敏不改变执行面的真值来源）。
     assert_eq!(
-        resolver.resolve_ref(&cred_ref_of(&reference)).expect("取真值"),
+        resolver
+            .resolve_ref(&cred_ref_of(&reference))
+            .expect("取真值"),
         "token-abcdefghijklmnop"
     );
 }

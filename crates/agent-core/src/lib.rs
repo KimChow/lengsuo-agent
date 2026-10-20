@@ -25,9 +25,7 @@ pub mod sensitive;
 pub mod tool;
 pub mod workspace_read;
 
-pub use credentials::{
-    CredentialError, StoreCredentialResolver, CRED_REF_SCHEME,
-};
+pub use credentials::{CredentialError, StoreCredentialResolver, CRED_REF_SCHEME};
 pub use error::CoreError;
 pub use event_log::{EventLog, JsonlEventLog};
 pub use executor::{ExecToolExecutor, EXEC_TOOL_NAME};

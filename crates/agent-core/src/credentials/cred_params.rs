@@ -63,10 +63,7 @@ pub fn resolve_cred_params(
         Ok(plaintext)
     };
     let value = substitute_value(args, &mut resolve)?;
-    Ok(ResolvedParams {
-        args: value,
-        pairs,
-    })
+    Ok(ResolvedParams { args: value, pairs })
 }
 
 /// 替换参数里的凭据引用（类型化门面口径：直接用 [`StoreCredentialResolver`]）。
@@ -84,10 +81,7 @@ pub fn resolve_cred_params_typed(
         Ok(plaintext)
     };
     let value = substitute_value(args, &mut resolve)?;
-    Ok(ResolvedParams {
-        args: value,
-        pairs,
-    })
+    Ok(ResolvedParams { args: value, pairs })
 }
 
 /// 列出参数里出现的全部凭据引用（去重、保序；审计与测试用）。
@@ -195,7 +189,9 @@ fn ref_token_end(text: &str, at: usize) -> Option<usize> {
     if !is_hyphenated_uuid(token) {
         return None;
     }
-    let next = rest.get(REF_ID_TEXT_LEN..).and_then(|tail| tail.chars().next());
+    let next = rest
+        .get(REF_ID_TEXT_LEN..)
+        .and_then(|tail| tail.chars().next());
     if let Some(next) = next {
         if next.is_ascii_hexdigit() || next == '-' {
             return None;
