@@ -8,13 +8,25 @@ mod daily;
 mod engine;
 mod error;
 mod identity;
+pub mod list;
 mod paths;
+pub mod read;
+pub mod search;
 
 pub use caps::{CAP_DAILY_LINE, CAP_PROJECT_MEMORY, CAP_SOUL, CAP_USER_MEMORY};
 pub use daily::{append_daily, clear_daily, read_daily_tail};
 pub use engine::{MemoryBundle, MemoryEngine};
 pub use error::MemoryError;
 pub use identity::{Identity, DEFAULT_AI_NAME, DEFAULT_USER_NAME};
+pub use list::{
+    ListMemoriesRequest, ListMemoriesResponse, MemoryEntry, MemoryEntryType,
+    DEFAULT_LIST_MAX_RESULTS, MAX_LIST_RESULTS, PROJECT_PREFIX, USER_PREFIX,
+};
 pub use paths::MemoryPaths;
+pub use read::{ReadMemoryRequest, ReadMemoryResponse, DEFAULT_READ_MAX_TOKENS};
+pub use search::{
+    MemorySearchMatch, SearchMatchMode, SearchMemoriesRequest, SearchMemoriesResponse,
+    DEFAULT_SEARCH_MAX_RESULTS, MAX_SEARCH_RESULTS,
+};
 
 pub use chrono::NaiveDate;

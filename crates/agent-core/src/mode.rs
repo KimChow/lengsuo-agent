@@ -44,16 +44,23 @@ pub const WRITE_TOOLS: [&str; 10] = [
     "identity.set_soul",
 ];
 
+/// 记忆检索只读工具名（Craft / Expert 可见；Ask 不可见）。
+///
+/// 三个工具虽只读，但记忆含跨会话隐私层，只读模式默认不暴露 —— 因此**不进**
+/// [`READONLY_TOOLS`]（Ask 白名单主体），单独由 `all_tools()` 的 craft 全集纳入。
+pub const MEMORY_READONLY_TOOLS: [&str; 3] = ["memory.list", "memory.search", "memory.read"];
+
 /// 规划门禁工具名（真门禁工具：进入规划 / 退出规划）。
 pub const PLAN_ENTER: &str = "plan.enter";
 
 /// 退出规划门禁工具名（`args.approved` 决定是否转为实际执行）。
 pub const PLAN_EXIT: &str = "plan.exit";
 
-/// 全部逻辑工具名（craft 全集 = 只读段 + 写段）。
+/// 全部逻辑工具名（craft 全集 = 只读段 + 写段 + 记忆检索只读段）。
 pub fn all_tools() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = READONLY_TOOLS.to_vec();
     names.extend_from_slice(&WRITE_TOOLS);
+    names.extend_from_slice(&MEMORY_READONLY_TOOLS);
     names
 }
 
@@ -246,6 +253,35 @@ mod tests {
         // Ask 只读白名单 / Quick 空集。
         assert!(!mode_policy(Mode::Ask).allows("memory.set_user"));
         assert!(!mode_policy(Mode::Quick).allows("memory.set_user"));
+    }
+
+    /// 记忆检索工具的可见性矩阵（h2-memory-search）。
+    ///
+    /// 只读 ≠ 对只读模式可见：Ask 白名单不含 `memory.*`，检索工具只在
+    /// Craft / Expert 的 craft 全集里出现。Plan 同样不可见（plan = 只读段 + 门禁）。
+    #[test]
+    fn memory_readonly_tools_are_craft_and_expert_only() {
+        for name in MEMORY_READONLY_TOOLS {
+            assert!(
+                !READONLY_TOOLS.contains(&name),
+                "{name} 不得进 Ask 只读白名单"
+            );
+            assert!(!WRITE_TOOLS.contains(&name), "{name} 不得进写集");
+            assert!(mode_policy(Mode::Craft).allows(name), "craft 应可见 {name}");
+            assert!(
+                mode_policy(Mode::Expert).allows(name),
+                "expert 应可见 {name}"
+            );
+            assert!(
+                !mode_policy(Mode::Plan).allows(name),
+                "plan 不应可见 {name}"
+            );
+            assert!(!mode_policy(Mode::Ask).allows(name), "ask 不应可见 {name}");
+            assert!(
+                !mode_policy(Mode::Quick).allows(name),
+                "quick 不应可见 {name}"
+            );
+        }
     }
 
     #[test]
