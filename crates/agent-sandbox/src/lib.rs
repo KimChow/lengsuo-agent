@@ -18,11 +18,18 @@ mod bounded;
 mod denial;
 mod types;
 
+/// 平台沙箱真实探测 + 危险命令表（判定端 P2 输入；跨平台统一形态）。
+pub mod probe;
+
 pub use baseline::{
     cache_roots_for_home, env_passlist, is_denied_path, CACHE_DIR_NAMES, DENY_PATH_COMPONENTS,
     ENV_PASSLIST,
 };
 pub use denial::{is_likely_executor_managed_sandbox_denied, is_likely_sandbox_denied};
+pub use probe::{
+    dangerous_command_reason, guarded_probe, probe_platform_sandbox, DangerousRule, PlatformProbe,
+    DANGEROUS_COMMANDS,
+};
 pub use types::{
     CommandSpec, ExecBounds, ExecOutcome, ExecStatus, NetworkMode, SandboxError, SandboxPolicy,
     SandboxType, SandboxablePreference,

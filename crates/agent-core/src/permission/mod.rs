@@ -8,6 +8,9 @@
 //!    资源级门与沙箱门均不越过此步）；
 //! 5. 已显式 auto 放行 → allow（工具级结论）；其余 → ask；
 //! 6. 资源级门（agent-execpolicy）：工具调用派生 `AccessRequest[]`，
+//!    其中 phase1 之后、第 7 步之前是**危险命令强制 ask 层**（wb22 §2 步骤 2）：
+//!    `shell.exec` 命令串全文子串匹配危险命令表，命中 → 直接 ask；位置在执行类
+//!    deny 检查之后、资源放行与沙箱优先门之前，因此「能沙箱」不减免审批；
 //!    - phase1：任一请求在**配置层**（项目/会话策略 + 内置安全基线）命中 deny → deny；
 //!    - phase2：全部请求在 **saved 层 + 配置层 + 内置基线**（层序：saved 在前 = 后层覆盖）
 //!      都命中 allow → allow；否则维持工具级结论（deny 可收紧，全 allow 可放宽，不升级）。
@@ -75,6 +78,32 @@ impl Decision {
 
     pub fn is_deny(&self) -> bool {
         matches!(self, Decision::Deny(_))
+    }
+}
+
+/// 判定 + 说明（审计事件用）：`reason` 只含静态规则/层名，**不回显任何参数值**。
+///
+/// 单独承载而非改 `Decision` 枚举形状：判定消费方（执行链路）仍只匹配三态，
+/// 说明面由宿主按需读取并透传到事件流；本卡不做审计查询面（P7）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assessment {
+    /// 三态结论。
+    pub decision: Decision,
+    /// 命中说明（规则名/层名）。
+    pub reason: String,
+}
+
+impl Assessment {
+    fn new(decision: Decision, reason: impl Into<String>) -> Self {
+        Self {
+            decision,
+            reason: reason.into(),
+        }
+    }
+
+    /// 事件流用的一行说明。
+    pub fn explain(&self) -> String {
+        format!("{} ({})", self.decision.explain(), self.reason)
     }
 }
 
@@ -156,20 +185,18 @@ impl PermissionGate {
         self
     }
 
-    /// 接真实平台探测：每次判定调用 [`agent_sandbox::get_platform_sandbox`]，
-    /// 把可用后端映射为指标标签（[`agent_sandbox::SandboxType::as_metric_tag`]）
-    /// 喂给同一个沙箱优先门。
+    /// 接真实平台探测：每次判定调用 [`agent_sandbox::probe::probe_platform_sandbox`]，
+    /// 只有探测结论为可用才把后端标签喂给沙箱优先门。
     ///
-    /// **默认不启用**：[`Self::new`] 与既有构造保持无探测（门不生效），
+    /// 探测失败/不可用/panic 一律映射为 `None` ⇒ 门不生效（fail-closed，
+    /// 维持 ask 而不是放行）。**默认不启用**：[`Self::new`] 保持无探测，
     /// 宿主必须显式选用本构造才启用沙箱优先门。
     #[must_use]
     pub fn with_platform_sandbox_probe(mut self) -> Self {
         self.sandbox_probe = Some(Arc::new(|| {
-            agent_sandbox::get_platform_sandbox().and_then(|sandbox| {
-                // `SandboxType::None` 不是可用后端；不能仅因标签非空就放行。
-                (sandbox != agent_sandbox::SandboxType::None)
-                    .then(|| sandbox.as_metric_tag().to_string())
-            })
+            agent_sandbox::probe::probe_platform_sandbox()
+                .metric_tag()
+                .map(str::to_string)
         }));
         self
     }
@@ -196,7 +223,7 @@ impl PermissionGate {
         self.approval_timeout
     }
 
-    /// 三态判定：工具级门（短路）→ 资源级门（两阶段汇总）→ 沙箱优先门。
+    /// 三态判定（只看结论）：[`Self::check_assessed`] 的 `decision` 投影。
     pub fn check(
         &self,
         mode: Mode,
@@ -204,9 +231,28 @@ impl PermissionGate {
         tool: &str,
         args: &Value,
     ) -> Decision {
+        self.check_assessed(mode, permission_mode, tool, args)
+            .decision
+    }
+
+    /// 三态判定 + 说明：工具级门（短路）→ 资源级 deny → 危险命令层 →
+    /// 资源级 allow → 沙箱优先门。
+    ///
+    /// 危险命令层插在资源级 deny 之后、资源 allow 与沙箱自动放行之前：
+    /// 命中**直接 ask**，显式拒绝仍优先（A22-2）。
+    pub fn check_assessed(
+        &self,
+        mode: Mode,
+        permission_mode: PermissionMode,
+        tool: &str,
+        args: &Value,
+    ) -> Assessment {
         // ---- 工具级门 1–3：未注册/白名单/readonly，原样短路 ----
         let Some(spec) = self.registry.get(tool) else {
-            return Decision::Deny(format!("工具未注册: {tool}"));
+            return Assessment::new(
+                Decision::Deny(format!("工具未注册: {tool}")),
+                "unregistered",
+            );
         };
         let name = spec.name.clone();
         let kind = spec.kind;
@@ -218,13 +264,19 @@ impl PermissionGate {
             .is_some_and(|set| set.contains(&name))
         {
             // deny-by-default：未显式配置该模式白名单即拒（空集同样拒）。
-            return Decision::Deny(format!("{tool} 不在 {mode_label} 模式白名单（默认拒绝）"));
+            return Assessment::new(
+                Decision::Deny(format!("{tool} 不在 {mode_label} 模式白名单（默认拒绝）")),
+                "whitelist-miss",
+            );
         }
         if permission_mode == PermissionMode::ReadOnly && !kind.allowed_when_readonly() {
-            return Decision::Deny(format!(
-                "readonly 权限模式不允许 {} 类工具: {tool}",
-                kind.as_str()
-            ));
+            return Assessment::new(
+                Decision::Deny(format!(
+                    "readonly 权限模式不允许 {} 类工具: {tool}",
+                    kind.as_str()
+                )),
+                "readonly-mode",
+            );
         }
         // ---- 工具级门 4：敏感动作强制 ask（不可配置跳过，后续门不越过）----
         if scan_arguments
@@ -232,7 +284,7 @@ impl PermissionGate {
                 .iter()
                 .any(|value| self.rules.match_reason(value).is_some())
         {
-            return Decision::Ask;
+            return Assessment::new(Decision::Ask, "sensitive-action");
         }
         // ---- 工具级门 5–6：auto → allow，其余 → ask（资源级门的底案）----
         let tool_verdict = if self.auto_allowed.contains(&name) {
@@ -240,29 +292,53 @@ impl PermissionGate {
         } else {
             Decision::Ask
         };
-        // ---- 资源级门：工具调用 → AccessRequest[] → execpolicy 两阶段汇总 ----
+        // ---- 资源级门 phase1：配置层 deny 优先（危险命令层不越过显式拒绝）----
         let requests = resource::access_requests(kind, args);
         if !requests.is_empty() {
             if let Some(reason) = resource::configured_deny(&self.configured, &requests) {
-                return Decision::Deny(reason);
+                return Assessment::new(Decision::Deny(reason), "execpolicy-deny");
             }
-            if resource::all_allowed(&self.saved, &self.configured, &requests) {
-                return Decision::Allow;
+        }
+        // ---- 危险命令层（wb22 §2 步骤 2）：独立于沙箱，命中即强制 ask ----
+        // 位置：执行类工具的 deny 检查之后、资源放行与沙箱优先门之前。
+        // 因此「能沙箱」「显式 auto」「资源全 allow」都不能免掉危险命令审批。
+        if matches!(kind, ToolKind::Exec) {
+            if let Some(rule) =
+                exec_command(args).and_then(agent_sandbox::probe::dangerous_command_reason)
+            {
+                return Assessment::new(Decision::Ask, format!("dangerous-command: {rule}"));
             }
+        }
+        // ---- 资源级门 phase2：全部请求命中 allow → allow ----
+        if !requests.is_empty() && resource::all_allowed(&self.saved, &self.configured, &requests) {
+            return Assessment::new(Decision::Allow, "execpolicy-allow");
         }
         // ---- 沙箱优先门（A22-1）：可沙箱的命令执行类跳过人工审批 ----
-        if tool_verdict.is_ask() && matches!(kind, ToolKind::Exec) && self.sandbox_probe_active() {
-            return Decision::Allow;
+        if tool_verdict.is_ask() && matches!(kind, ToolKind::Exec) {
+            if let Some(backend) = self.sandbox_probe_tag() {
+                return Assessment::new(Decision::Allow, format!("sandbox-gate: {backend}"));
+            }
         }
-        tool_verdict
+        let reason = if tool_verdict.is_allow() {
+            "auto-approved"
+        } else {
+            "needs-approval"
+        };
+        Assessment::new(tool_verdict, reason)
     }
 
-    fn sandbox_probe_active(&self) -> bool {
+    /// 探测后端标签；不可用/空标签/无探测一律 `None`（门不生效）。
+    fn sandbox_probe_tag(&self) -> Option<String> {
         self.sandbox_probe
             .as_ref()
             .and_then(|probe| probe())
-            .is_some_and(|backend| !backend.is_empty())
+            .filter(|backend| !backend.is_empty())
     }
+}
+
+/// `shell.exec` 的命令串（危险命令层只扫这一个字段，不扫 cwd/env）。
+fn exec_command(args: &Value) -> Option<&str> {
+    args.get("command").and_then(Value::as_str)
 }
 
 /// 收集 JSON 值里的全部字符串（敏感扫描用；参数规模有限）。

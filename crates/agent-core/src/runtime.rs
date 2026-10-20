@@ -228,12 +228,18 @@ mod bus;
 mod execute;
 mod internals;
 mod sessions;
+mod skills;
 mod task_tools;
 mod tasks;
 mod tool_result;
 mod turns;
 mod turns_settle;
 
+pub use skills::{SkillInjection, SKILL_CONTENT_NOTICE, SKILL_INJECTED_EVENT};
+// 技能注入面的宿主侧类型（`agent-skills` 的目录入口与调用来源）在此**再导出**：
+// 宿主只需依赖 `agent-core` 即可完成注入调用（`agent-core` 是技能面的唯一
+// 公开入口，`agent-skills` 保持「不做注入」的职责边界）。
+pub use agent_skills::{InvocationSource, SkillCatalog};
 pub use task_tools::TaskToolExecutor;
 pub use tasks::{Task, TaskStatus};
 pub use turns::StepOutcome;

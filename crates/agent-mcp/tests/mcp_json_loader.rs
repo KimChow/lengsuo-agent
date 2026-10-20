@@ -1,7 +1,7 @@
 //! `mcp.json` 加载器验收：路径约定、三条强校验、合并语义与
 //! `StdioServerCommand -> ClientConfig` 接缝。
 //!
-//! 参考规格：本地对照资料 18 册 §9.2（原文亦见
+//! 参考规格：本地对照资料（不入库） 18 册 §9.2（原文亦见
 //! `crates/agent-prompts/assets/safety-rules.md`）。
 
 use std::collections::BTreeMap;

@@ -6,8 +6,8 @@
 //!
 //! 真相来源：调研 `harness-expert.md` §3（`plugin.json` 逐字段判定表）。
 //!
-//! 边界（本卡只建骨架与数据结构，**不含业务逻辑**）：
-//! - 校验 → 卡 2（`validate.rs`）；发现/注册表 → 卡 3（`registry.rs`）；
+//! 边界：
+//! - 校验 → 卡 2（`validate/`）；发现/注册表 → 卡 3（`registry.rs`）；
 //!   路径 → 卡 4（`paths.rs`）；人格注入 → 卡 5（`agent-prompts`）。
 //!
 //! 字段名与 wire 格式**原样保留**样本的 camelCase 键名——跨端契约，改名会
@@ -34,6 +34,9 @@
 pub mod error;
 pub mod manifest;
 pub mod paths;
+pub mod registry;
+pub mod validate;
+pub mod validate_errors;
 
 pub use error::{ExpertError, Severity};
 pub use manifest::{
@@ -44,3 +47,9 @@ pub use paths::{
     AGENTS_DIR, AVATARS_DIR, BIN_DIR, DOWNLOADED_AT_FILE, MANIFEST_FILE, PLUGIN_DIR,
     PROJECT_EXPERTS_DIR, REGISTRY_FILE, SKILLS_DIR, USER_EXPERTS_DIR,
 };
+pub use registry::{
+    ExpertOrigin, ExpertPackage, ExpertRegistry, ExpertRoot, ExpertScope, OverrideRecord,
+    RegistryEntry, RegistryFile, ShadowedExpert,
+};
+pub use validate::{RuleSet, ValidateContext, ValidationReport, Validator};
+pub use validate_errors::{ItemError, ValidateError};

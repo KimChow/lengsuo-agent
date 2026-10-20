@@ -39,7 +39,7 @@ impl PromptMode {
 /// 注入模板的变量集。全部由调用方提供（引擎不取时钟、不读环境、不做 IO）。
 ///
 /// 字段顺序即模板变量的分组顺序：产品 → 身份 → 环境 → 规则/风格 → 专家人格 →
-/// 语言/平台 → 功能开关 → 工具呈现 → 记忆四段（身份/用户/项目/当日）。
+/// 语言/平台 → 功能开关 → 工具呈现 → 记忆四段（身份/用户/项目/当日）→ 专家人格正文。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PromptVars {
     /// 产品名。
@@ -64,7 +64,9 @@ pub struct PromptVars {
     pub user_rules: String,
     /// 风格层文本；本卡仅作数据面。
     pub tone_style: String,
-    /// 专家人格注入点。
+    /// 专家人格注入点（参考端 `PluginAgentPrompt`，**预留**：当前无模板消费）。
+    ///
+    /// 与 [`Self::expert_persona`] 的分工见后者文档。
     pub plugin_agent_prompt: String,
     /// 子代理人格；可留空。
     pub sub_agent_prompt: String,
@@ -90,13 +92,21 @@ pub struct PromptVars {
     pub memory_project: String,
     /// 记忆·当日日志尾（上限 2000 字符，由注入方保证）。
     pub memory_daily: String,
+    /// 专家人格正文（来源：专家包 `agents/<agentName>.md` 正文）。
+    ///
+    /// 只承载**正文**与专家名：段标题、边界标签与声明由模板提供（见
+    /// `templates/expert.rs`），空串或纯空白 ⇒ 人格槽整段省略（[`Segment::Var`] 语义）。
+    /// 脱敏由调用方在填入前完成（本 crate 不依赖 `agent-core` 的 `Redactor`）。
+    /// 与 `plugin_agent_prompt` 是两个变量：后者是预留的通用注入点，本字段是
+    /// expert 模板的专用人格槽。
+    pub expert_persona: String,
 }
 
 /// 模板可注入键的全集（snake_case，与字段名逐字一致）。
 ///
 /// 布尔字段以 `"true"` / `"false"` 形式可被 `{{key}}` 替换；测试用它遍历断言
 /// 「每个键都有值」，避免新增字段时漏挂 key。
-pub const PROMPT_VAR_KEYS: [&str; 24] = [
+pub const PROMPT_VAR_KEYS: [&str; 25] = [
     "product_name",
     "data_folder_name",
     "ai_name",
@@ -121,6 +131,7 @@ pub const PROMPT_VAR_KEYS: [&str; 24] = [
     "memory_user",
     "memory_project",
     "memory_daily",
+    "expert_persona",
 ];
 
 impl PromptVars {
@@ -151,6 +162,7 @@ impl PromptVars {
             "memory_user" => &self.memory_user,
             "memory_project" => &self.memory_project,
             "memory_daily" => &self.memory_daily,
+            "expert_persona" => &self.expert_persona,
             _ => return None,
         };
         Some(value)

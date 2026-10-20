@@ -68,7 +68,9 @@ pub use error::Error;
 pub use host::{
     Host, HostConfig, HostEvent, NextEvent as HostNextEvent, DEFAULT_MAX_EVENTS as HOST_MAX_EVENTS,
 };
-pub use host_baseline::{register_baseline, BaselineConfig, BASELINE_METHODS};
+pub use host_baseline::{
+    register_baseline, register_ping, BaselineConfig, BASELINE_METHODS, SYS_PING_METHOD,
+};
 pub use message::{
     JsonRpcErrorObject, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, JsonRpcVersion,
     Message, RequestId, JSONRPC_ERROR_INVALID_PARAMS, JSONRPC_ERROR_INVALID_REQUEST,

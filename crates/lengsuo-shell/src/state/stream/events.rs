@@ -7,7 +7,7 @@ use crate::gateway::{EventKind, GatewayEvent};
 use crate::state::StateError;
 
 use super::payload::{
-    extract_text, extract_tool_result_text, field_str, field_u64, tool_result_ref,
+    extract_text, extract_tool_result_text, field_str, field_u64, tool_args_ref, tool_result_ref,
 };
 use super::{
     MessageRole, PendingApproval, SessionMessage, SessionMode, SessionStreamState, StreamPhase,
@@ -83,7 +83,7 @@ impl SessionStreamState {
                     content: text,
                     tool: Some(ToolRef {
                         name,
-                        args_ref: field_str(event, "args_ref"),
+                        args_ref: tool_args_ref(event),
                         result_ref: None,
                         ms: field_u64(event, "ms").unwrap_or(0),
                     }),

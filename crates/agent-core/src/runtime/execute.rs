@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::error::CoreError;
 use crate::host::{HostServices, McpToolDispatcher};
 use crate::permission::Decision;
-use crate::schema::{Event, Session};
+use crate::schema::{ApprovalResolution, Event, Session};
 
 use super::turns::StepOutcome;
 use super::Runtime;
@@ -125,10 +125,121 @@ impl Runtime {
                 Ok(StepOutcome::ToolSettled)
             }
             Decision::Ask => {
-                self.push_tool_result(id, name, args.clone(), PENDING_TOOL_RESULT)?;
+                // P3 缺项①：先登记「是哪一次调用」再落 pending 占位。
+                // `tool_call_id` 同时出现在审批请求与占位结果里，宿主据此在
+                // `respond` 之后调用 `resume_approved_tool_call` 闭环回传。
+                let approval = self.register_pending_tool_call(id, session, name, args);
+                let pending = json!({
+                    "status": "pending",
+                    "note": "工具调用已持久化，等待用户审批",
+                    "toolCallId": approval.tool_call_id,
+                    "approvalId": approval.id,
+                });
+                self.push_tool_result(id, name, args.clone(), &pending.to_string())?;
                 Ok(StepOutcome::ToolSettled)
             }
         }
+    }
+
+    /// 审批回传闭环（P3 缺项③）：批准 ⇒ 真正执行被挂起的调用并回传结果；
+    /// 拒绝/超时/取消 ⇒ 回传 `isError` 结果（文案分别为用户拒绝、超时、取消）。
+    ///
+    /// 关联键是 `tool_call_id`（缺项①）；挂起快照由 `execute_tool` 的 Ask 分支
+    /// 登记，本方法一次性取走。取消传播（缺项②）优先于入参结论：会话已取消、
+    /// 已结束，或审批槽已被取消时，即使 `resolution` 为 `Approved` 也不执行。
+    ///
+    /// 与 `execute_tool` 一样**不在步内阻塞**（参考 §9.3：宿主在
+    /// `approval:respond` 后调用本方法）：结果落进会话历史并发 `tool_result`
+    /// 事件，下一步重读历史即可拿到与 `tool_call_id` 关联的真实结果。
+    pub fn resume_approved_tool_call(
+        &self,
+        session_id: Uuid,
+        tool_call_id: Uuid,
+        resolution: ApprovalResolution,
+    ) -> Result<Event, CoreError> {
+        let pending = self
+            .gate
+            .take_pending_tool_call(tool_call_id)
+            .ok_or(CoreError::ApprovalNotFound(tool_call_id))?;
+        if pending.session_id != Some(session_id) {
+            return Err(CoreError::ApprovalNotFound(tool_call_id));
+        }
+        // 取消/超时/未批准三态归一：取消最高优先，超时其次；调用方声称批准
+        // 但审批槽从未批准 ⇒ 拒绝执行（fail-closed，防绕过 respond）。
+        let effective = if pending.cancelled || self.session_halted(session_id) {
+            ApprovalResolution::Cancelled
+        } else if pending.timed_out {
+            ApprovalResolution::TimedOut
+        } else if matches!(resolution, ApprovalResolution::Approved { .. }) && !pending.approved {
+            return Err(CoreError::InvalidConfig(
+                "工具调用未获批准，拒绝续跑".into(),
+            ));
+        } else {
+            resolution
+        };
+
+        let (result, is_error, executed) = match effective {
+            ApprovalResolution::Approved { .. } => {
+                match self.invoke_pending_tool(&pending.tool_name, &pending.args) {
+                    Ok(value) => (value, false, true),
+                    Err(message) => (json!({ "type": "error", "message": message }), true, false),
+                }
+            }
+            ApprovalResolution::Denied { .. } => (
+                json!({
+                    "type": "error",
+                    "reason": "user_denied",
+                    "message": "用户拒绝执行该工具调用",
+                }),
+                true,
+                false,
+            ),
+            ApprovalResolution::TimedOut => (
+                json!({
+                    "type": "error",
+                    "reason": "timed_out",
+                    "message": "审批等待超时，已按拒绝处理",
+                }),
+                true,
+                false,
+            ),
+            ApprovalResolution::Cancelled => (
+                json!({
+                    "type": "error",
+                    "reason": "cancelled",
+                    "message": "会话已取消，审批作废，工具调用未执行",
+                }),
+                true,
+                false,
+            ),
+        };
+
+        let (_message, mut payload) = self.push_tool_result(
+            session_id,
+            &pending.tool_name,
+            pending.args.clone(),
+            &result.to_string(),
+        )?;
+        payload["result"] = result;
+        payload["isError"] = json!(is_error);
+        payload["executed"] = json!(executed);
+        payload["toolCallId"] = json!(tool_call_id.to_string());
+        payload["approvalId"] = json!(pending.approval_id.to_string());
+        let session = self.get_session(session_id)?;
+        self.emit(&session, "tool_result", payload)
+    }
+
+    /// 续跑一次真实工具调用（与 `Decision::Allow` 分支同源：MCP 路由优先，
+    /// 其次注入的执行器；任务工具在调用期间持有语境）。
+    fn invoke_pending_tool(&self, name: &str, args: &Value) -> Result<Value, String> {
+        if let Some(route) = self.mcp_route(name) {
+            return route.dispatch.call_tool(route.server, route.tool, args);
+        }
+        let Some(executor) = self.tool_executor() else {
+            return Err("工具执行器未注入，无法恢复执行".to_string());
+        };
+        self.with_task_runtime(|| executor.execute(name, args))
+            .unwrap_or_else(|error| Err(error.to_string()))
     }
 
     /// 判定某工具名是否应走 MCP 路由；命中则返回解析出的地址与端口。

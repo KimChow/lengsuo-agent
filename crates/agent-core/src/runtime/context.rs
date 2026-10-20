@@ -12,6 +12,10 @@
 //!   `HISTORY_TOTAL_CHARS` 从最旧整组丢弃，工具调用与结果同组同进退，最新一条
 //!   永不丢；对齐 opencode 上下文重建/裁剪的确定性口径）；
 //! - `memory_digest`：`memory.enabled` 关闭时为 `None`，Composer 不留空段。
+//! - **技能注入段**（h3-skill-inject-guard）：会话已注入的技能正文段
+//!   （`<skill-content>` + 数据边界声明）**追加在宿主模板之后**，与宿主模板
+//!   **分区**（技能正文是数据、不是指令）。段内容取自 durable 事件
+//!   （`skill_injected`），因此进程重启后注入段仍在。
 //!
 //! 隐私（AGENTS §6）：进入上下文的任何文本先过脱敏器；凭据不进模型输入。
 //!
@@ -50,11 +54,32 @@ impl Runtime {
         TurnContext {
             session_id: session.id,
             mode: session.mode,
-            system_prompt,
+            system_prompt: self.with_skill_segments(session.id, system_prompt),
             memory_digest: (!memory.digest.is_empty()).then_some(memory.digest),
             history: self.compacted_history(history),
             user_text: self.redact(user_text),
         }
+    }
+
+    /// 宿主模板 + 技能注入段（h3-skill-inject-guard）。
+    ///
+    /// **分区**：技能段追加在宿主模板**之后**，并自带 `<skill-content>` 标签与
+    /// 数据边界声明——模型看到的是「一段被明确标注为数据的内容」，而不是宿主
+    /// 指令的延续。技能正文里的越权要求因此不构成授权（授权面只由权限门与
+    /// 宿主已授权工具集决定）。
+    ///
+    /// 无注入段时逐字节返回宿主模板（零回归）。
+    fn with_skill_segments(&self, session_id: Uuid, template: String) -> String {
+        let segments = self.skill_segments(session_id);
+        if segments.is_empty() {
+            return template;
+        }
+        let mut out = template;
+        for segment in segments {
+            out.push_str("\n\n");
+            out.push_str(&segment);
+        }
+        out
     }
 
     /// 历史进上下文的**主路径**：压缩边界 + 摘要。

@@ -28,6 +28,17 @@ pub(super) fn tool_result_ref(event: &GatewayEvent) -> Option<String> {
     field_str(event, "resultRef").or_else(|| field_str(event, "result_ref"))
 }
 
+/// `tool_use` 参数引用：优先 agent-core 真实形态的 `argsRef`，其次旧形态
+/// `args_ref`。两者都没有时为 `None`（引用只是句柄，本层不据此读取内容）。
+///
+/// 与 [`tool_result_ref`] 同款写法：`agent-core` 的事件 payload 用
+/// `serde(rename_all = "camelCase")` 的键名（`argsRef` / `resultRef`），
+/// 旧事件是 snake_case（`args_ref` / `result_ref`）——两种都读，避免「字段
+/// 在、值恒空」的键名漂移。
+pub(super) fn tool_args_ref(event: &GatewayEvent) -> Option<String> {
+    field_str(event, "argsRef").or_else(|| field_str(event, "args_ref"))
+}
+
 /// 从 `payload` 取字符串字段。
 pub(super) fn field_str(event: &GatewayEvent, key: &str) -> Option<String> {
     event

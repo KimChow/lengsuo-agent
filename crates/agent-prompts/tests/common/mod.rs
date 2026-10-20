@@ -30,6 +30,7 @@ pub fn full_vars() -> PromptVars {
         memory_user: "MEMUSR-用户偏好中文提交信息".into(),
         memory_project: "MEM-项目：提示词引擎；决定：plan 复用 craft 模板".into(),
         memory_daily: "MEMDAY-当日：完成 PromptVars 扩容".into(),
+        expert_persona: "PERSONA-专家包人格正文".into(),
     }
 }
 

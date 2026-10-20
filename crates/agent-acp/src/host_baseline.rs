@@ -7,6 +7,13 @@
 //! **清单**：只有 [`method::INITIALIZE`] 与 [`method::LOGOUT`]——握手与登出必需，
 //! 且都是零副作用；`session/*` 等有状态方法**不在基线内**。
 //!
+//! **网关转发探针**：[`register_ping`] 单独注册 `sys:ping`（回 `{"pid": …}`），
+//! 供网关生产入口在基线之上调用（见 `docs/contracts/acp-host.md` §8.5）。它**不**
+//! 并入 [`BASELINE_METHODS`]：那个清单只收 ACP wire 方法名（`methods::method` 常量），
+//! 而 `sys:ping` 是 `/rpc` 的 `域:动作` 名、**不在** `ACP_METHODS` 内（见
+//! `docs/contracts/acp-method-ledger.md` §4）。名字用本模块的字符串常量，不改
+//! `methods::method` 常量集合——否则会与契约侧「`sys:ping` 不在 `ACP_METHODS`」冲突。
+//!
 //! **默认不启用**：[`crate::host::Host::new`] 行为不变（空表起步，未注册即 `-32601`），
 //! 基线必须由调用方显式 [`register_baseline`]。既有用例依赖「未注册即 `-32601`」
 //! 这条不变量，故不做隐式兜底。
@@ -44,6 +51,12 @@ impl Default for BaselineConfig {
     }
 }
 
+/// 网关 `/rpc` 白名单动作 `sys:ping` 的 ACP method 名（原样作 method 投出）。
+///
+/// 不放进 [`crate::methods::method`]：它不是 ACP 标准方法，只作「名称同形可直接
+/// 转发」的探针（台账 §4）。
+pub const SYS_PING_METHOD: &str = "sys:ping";
+
 /// 在 `host` 的方法表上注册基线方法（同名重复注册 = 覆盖）。
 ///
 /// - `initialize`：解析 [`InitializeParams`]，失败回 `-32602`（不 panic）；成功回
@@ -78,6 +91,18 @@ pub fn register_baseline(host: &Host, config: &BaselineConfig) {
     });
 
     host.register_method(method::LOGOUT, |_req| RpcOutcome::Ok(Value::Null));
+}
+
+/// 注册网关转发探针 `sys:ping`：无参数，回 `{"pid": <本进程 pid>}`。
+///
+/// 与 [`register_baseline`] 一样是显式 opt-in（[`crate::host::Host::new`] 与
+/// `AcpHostHandle::start` 都不隐式调用）：它**不是** ACP 基线方法，也不是对任意
+/// 动作的兜底——只应答这**一个**动作，且应答只读本进程 pid，不带任何会话/配置/
+/// 审批语义，故不构成「绕过 ACP 语义」的通道。不调用的 host 对该动作仍回 `-32601`。
+pub fn register_ping(host: &Host) {
+    host.register_method(SYS_PING_METHOD, |_req| {
+        RpcOutcome::Ok(serde_json::json!({ "pid": std::process::id() }))
+    });
 }
 
 /// 结果序列化失败归为内部错误（字段均为可序列化标量，正常路径不可达）。

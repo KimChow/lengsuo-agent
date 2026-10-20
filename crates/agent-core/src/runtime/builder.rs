@@ -77,9 +77,14 @@ impl RuntimeBuilder {
             source: e,
         })?;
         let log: Arc<dyn EventLog> = Arc::new(JsonlEventLog::open(workdir.join("events"))?);
-        let gate = self
-            .gate
-            .unwrap_or_else(|| PermissionGate::new(crate::tool::default_registry()));
+        // 默认门接**真实平台探测**（P2 判定端）：第 7 步「能否沙箱」来自
+        // `agent_sandbox::probe::probe_platform_sandbox()`，探测失败 fail-closed
+        // 维持 ask。宿主显式注入的 gate 保持其自身配置（注入优先，便于测试注入
+        // `with_sandbox_probe`）；需要真实探测的宿主可直接在 gate 上调用
+        // `with_platform_sandbox_probe()`。
+        let gate = self.gate.unwrap_or_else(|| {
+            PermissionGate::new(crate::tool::default_registry()).with_platform_sandbox_probe()
+        });
         let provider = self
             .provider
             .ok_or_else(|| CoreError::InvalidConfig("Runtime 必须注入 provider".into()))?;

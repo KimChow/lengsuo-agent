@@ -11,7 +11,8 @@
 //! 未在 host 注册过的动作走 ACP 的 `-32601 method not found` 语义，不 panic。
 //!
 //! **host 基线**：生产入口 [`AcpHostHandle::from_gateway_config`] 默认注册
-//! `initialize` / `logout`（见 [`agent_acp::host_baseline`]）；[`AcpHostHandle::start`]
+//! `initialize` / `logout`（见 [`agent_acp::host_baseline`]），外加网关转发探针
+//! `sys:ping`（[`agent_acp::host_baseline::register_ping`]）；[`AcpHostHandle::start`]
 //! 则按调用方传入的 [`HostConfig`] 原样起，**不做隐式注册**。
 //!
 //! **仍未做的部分（诚实登记）**：
@@ -29,7 +30,7 @@ use std::time::Duration;
 
 use agent_acp::control::TopLevel;
 use agent_acp::host::{Host, HostConfig, HostEvent, NextEvent};
-use agent_acp::host_baseline::{register_baseline, BaselineConfig};
+use agent_acp::host_baseline::{register_baseline, register_ping, BaselineConfig};
 use agent_acp::message::{JsonRpcRequest, Message, RequestId};
 use agent_acp::router::RpcOutcome;
 use agent_acp::transport::Transport;
@@ -248,13 +249,16 @@ impl AcpHostHandle {
     ///
     /// **与 [`AcpHostHandle::start`] 的默认值不同**：这里是网关启动 ACP host 的
     /// **生产入口**，要跟真实对端说话，故默认注册 host 基线（`initialize` /
-    /// `logout`，协议版本取 [`BaselineConfig::default`]）。`start` 接受调用方显式
+    /// `logout`，协议版本取 [`BaselineConfig::default`]），并为白名单成员 `sys:ping`
+    /// 注册应答实现（[`register_ping`]，回本进程 pid）——白名单开了这个动作，
+    /// 网关自己的 host 就必须答得上，否则转发必然 `-32601`。`start` 接受调用方显式
     /// 传入的 [`HostConfig`]，语义是「按调用方要求原样起」，因此**不加任何隐式注册**
     /// （未注册方法仍回 `-32601`）。理由见 `docs/contracts/acp-host.md` §8.4。
     #[must_use]
     pub fn from_gateway_config(_config: &GatewayConfig, transport: Transport) -> Self {
         let handle = Self::start(transport, HostConfig::default());
         register_baseline(&handle.inner, &BaselineConfig::default());
+        register_ping(&handle.inner);
         handle
     }
 

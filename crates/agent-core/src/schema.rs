@@ -262,6 +262,9 @@ impl Event {
 pub struct ApprovalRequest {
     pub id: Uuid,
     pub session_id: String,
+    /// 被审工具调用的 id（会话内并发待批时用于定位具体哪一次调用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<Uuid>,
     pub tool_name: String,
     /// 参数摘要（已脱敏，不含凭据值）。
     pub summary: String,
@@ -269,10 +272,85 @@ pub struct ApprovalRequest {
     pub expires_at_ms: u64,
 }
 
+/// 审批人（只落字段供 P7 审计面消费；本卡不提供查询/导出面）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalActor {
+    /// 用户显式批准/拒绝。
+    User,
+    /// 自动策略（自动批准矩阵）批准/拒绝。
+    AutoPolicy,
+}
+
 /// 审批应答结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApprovalOutcome {
     pub approved: bool,
+    pub timed_out: bool,
+    /// 取消传播：会话取消/审批作废时为 true，且 `approved` 恒为 false。
+    pub cancelled: bool,
+    /// 审批人；超时/取消（无应答主体）为 `None`。
+    pub actor: Option<ApprovalActor>,
+}
+
+impl ApprovalOutcome {
+    /// 未超时、未取消的普通应答。
+    pub fn answered(approved: bool, actor: Option<ApprovalActor>) -> Self {
+        Self {
+            approved,
+            timed_out: false,
+            cancelled: false,
+            actor,
+        }
+    }
+
+    /// 等待超时（按拒绝语义，无审批主体）。
+    pub fn timed_out() -> Self {
+        Self {
+            approved: false,
+            timed_out: true,
+            cancelled: false,
+            actor: None,
+        }
+    }
+
+    /// 会话取消导致审批作废（收到批准也丢弃）。
+    pub fn cancelled(actor: Option<ApprovalActor>) -> Self {
+        Self {
+            approved: false,
+            timed_out: false,
+            cancelled: true,
+            actor,
+        }
+    }
+}
+
+/// 审批后的续跑结论（`resume_approved_tool_call` 的入参）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalResolution {
+    /// 批准：真正执行被挂起的工具调用并回传结果。
+    Approved { actor: ApprovalActor },
+    /// 用户/策略拒绝：不执行，回传「用户拒绝」isError 结果。
+    Denied { actor: ApprovalActor },
+    /// 等待超时：不执行，回传明确的超时失败结果。
+    TimedOut,
+    /// 会话取消：不执行，回传明确的取消失败结果。
+    Cancelled,
+}
+
+/// 已登记、等待审批的工具调用（关联键与续跑所需的最小快照）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingToolCall {
+    pub approval_id: Uuid,
+    pub session_id: Option<Uuid>,
+    pub tool_call_id: Uuid,
+    pub tool_name: String,
+    pub args: Value,
+    /// 审批槽是否已被取消传播作废。
+    pub cancelled: bool,
+    /// 审批槽是否已收到「批准」应答。
+    pub approved: bool,
+    /// 审批槽是否已按等待超时终结。
     pub timed_out: bool,
 }
 
