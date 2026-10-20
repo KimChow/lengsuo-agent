@@ -100,3 +100,91 @@ fn redaction_is_idempotent_and_marks_output() {
     assert!(r.needs_redaction("password=abcdef123456"));
     assert!(!r.needs_redaction(&once), "已脱敏文本无需再标红");
 }
+
+// ---- 形态规则（对照 codex-rs/secrets/src/sanitizer.rs） ----
+
+#[test]
+fn redacts_bare_openai_and_aws_tokens() {
+    let r = Redactor::default_v0();
+    let cases = [
+        // 键名 X-Api 不在键名族内，只能靠 sk- 形态规则。
+        (
+            r#"curl -H "X-Api: sk-abcdefghijklmnopqrstuvwxyz""#,
+            "sk-abcdefghijklmnopqrstuvwxyz",
+        ),
+        (
+            "aws_access_key_id = AKIAIOSFODNN7EXAMPLE",
+            "AKIAIOSFODNN7EXAMPLE",
+        ),
+    ];
+    for (input, leak) in cases {
+        let out = r.redact_str(input);
+        assert!(!out.contains(leak), "裸 token 未脱敏：{input:?} -> {out:?}");
+        assert!(out.contains("***"), "应有脱敏标记：{out:?}");
+    }
+    assert_eq!(r.redact_str("sk-abcdefghijklmnopqrstuvwxyz"), "***");
+    assert_eq!(r.redact_str("AKIAIOSFODNN7EXAMPLE"), "***");
+}
+
+#[test]
+fn redacts_bearer_token_shapes_like_codex() {
+    let r = Redactor::default_v0();
+    // 样例取自 codex sanitizer.rs 的 redacts_supported_bearer_tokens。
+    let cases = [
+        ("Bearer abcde+fghijklmnopqrstuvwxyz012345", "Bearer ***"),
+        ("Bearer abcdefghijklmnop+secret_suffix", "Bearer ***"),
+        ("Bearer sk-abcdefghijklmnopqrst+secret_suffix", "Bearer ***"),
+        ("Bearer AKIAABCDEFGHIJKLMNOP/~secret_suffix", "Bearer ***"),
+        (
+            "Bearer AbcdefghijklMN09._~+/-==; echo done",
+            "Bearer ***; echo done",
+        ),
+        (
+            "authorization: bEaReR\tabcdefghijklmnop",
+            "authorization: Bearer ***",
+        ),
+        ("Bearer   abcdefghijklmnop", "Bearer ***"),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(r.redact_str(input), expected, "输入：{input:?}");
+    }
+}
+
+#[test]
+fn avoids_shape_false_positives() {
+    let r = Redactor::default_v0();
+    // sk- 需 >=20 位；AKIA 需词边界 + 恰好 16 位；Bearer 需 >=16 位。
+    let cases = [
+        "sk-learn",
+        "sk-short",
+        "AKIAABCDEFGHIJ",
+        "Bearer abcde",
+        // codex avoids_bearer_false_positives 全部样例。
+        "Bearer of good news",
+        "Bearer abcdefghijklmno",
+        "NotABearer abcdefghijklmnop",
+        "Bearerabcdefghijklmnop",
+        "Bearer\nabcdefghijklmnop",
+        "Bearer\u{a0}abcdefghijklmnop",
+        "Bearer abcdefghijklmno\u{212a}",
+    ];
+    for input in cases {
+        assert_eq!(r.redact_str(input), input, "不得误伤：{input:?}");
+    }
+}
+
+#[test]
+fn shape_redaction_is_idempotent() {
+    let r = Redactor::default_v0();
+    let samples = [
+        r#"curl -H "X-Api: sk-abcdefghijklmnopqrstuvwxyz""#,
+        "aws_access_key_id = AKIAIOSFODNN7EXAMPLE",
+        "authorization: bEaReR\tabcdefghijklmnop",
+        "Bearer sk-abcdefghijklmnopqrst+secret_suffix",
+    ];
+    for input in samples {
+        let once = r.redact_str(input);
+        let twice = r.redact_str(&once);
+        assert_eq!(once, twice, "二次脱敏不得改变结果：{input:?}");
+    }
+}
