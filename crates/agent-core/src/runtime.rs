@@ -255,6 +255,11 @@ pub use builder::RuntimeBuilder;
 
 mod context;
 
+pub mod compaction;
+pub use compaction::{
+    Compaction, CompactionError, CompactionPlan, CompactionSettings, Outcome, Trigger,
+};
+
 /// 字符级预览截断（≤max 字符，超限加省略标记）。
 pub(super) fn preview(text: &str, max: usize) -> String {
     if text.chars().count() <= max {

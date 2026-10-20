@@ -5,9 +5,11 @@
 //!   （AI 名/用户称呼/人格，agent-memory 身份层不受跨会话记忆开关限制）、工作区、
 //!   确定性日期文本、以及**已启用**时的记忆摘要；
 //! - `history`：会话已有消息（时间序），本轮输入在其后单独作为 `user_text`；
-//!   进上下文过两道闸：先逐条收窄（`HISTORY_MESSAGE_CHARS`），再按总预算裁剪
-//!   （`fit_history`：超 `HISTORY_TOTAL_CHARS` 从最旧整组丢弃，工具调用与结果
-//!   同组同进退，最新一条永不丢；对齐 opencode 上下文重建/裁剪的确定性口径）；
+//!   进上下文先过**压缩路径**（[crate::runtime::compaction]：历史只从最近一次
+//!   completed 压缩开始读，老段由摘要承载），**压缩不可用时**降级到兜底裁剪
+//!   （先逐条收窄 `HISTORY_MESSAGE_CHARS`，再按总预算裁剪 `fit_history`：超
+//!   `HISTORY_TOTAL_CHARS` 从最旧整组丢弃，工具调用与结果同组同进退，最新一条
+//!   永不丢；对齐 opencode 上下文重建/裁剪的确定性口径）；
 //! - `memory_digest`：`memory.enabled` 关闭时为 `None`，Composer 不留空段。
 //!
 //! 隐私（AGENTS §6）：进入上下文的任何文本先过脱敏器；凭据不进模型输入。
@@ -20,11 +22,16 @@ use std::ops::Range;
 use super::*;
 use crate::schema::Role;
 use agent_prompts::{Composer, PromptMode, PromptVars};
+use serde_json::json;
+
+use super::compaction;
 
 /// 历史消息进上下文前的字符上限（防单条大输出顶爆模型输入；大结果走 result_ref）。
 const HISTORY_MESSAGE_CHARS: usize = 2000;
 
 /// 历史总预算（字符口径）：逐条收窄后仍超 ⇒ 从最旧整组丢弃（见 [`fit_history`]）。
+///
+/// **兜底口径**：压缩路径不可用时才用（见 [`fit_history`] 的说明）。
 const HISTORY_TOTAL_CHARS: usize = 24_000;
 
 impl Runtime {
@@ -43,8 +50,40 @@ impl Runtime {
             mode: session.mode,
             system_prompt,
             memory_digest: digest,
-            history: fit_history(&narrow_history(history)),
+            history: self.compacted_history(history),
             user_text: self.redact(user_text),
+        }
+    }
+
+    /// 历史进上下文的**主路径**：压缩边界 + 摘要。
+    ///
+    /// 压缩路径（[crate::runtime::compaction]）只做两件事，都不碰网络：
+    /// 1. **历史边界**：只从最近一次 completed 压缩开始读（照抄 opencode
+    ///    `history.ts:28` 的 `latestCompaction`）——压缩产物是 checkpoint 消息，
+    ///    之前的原始消息已被摘要覆盖，不必再进模型；
+    /// 2. **兜底裁剪**：边界之后的新消息仍可能超预算 ⇒ 降级到 [`fit_history`]
+    ///    （逐条收窄 + 总预算整组丢弃）。
+    ///
+    /// **checkpoint 逐字保留**（不进收窄、也不被兜底裁剪丢）：摘要是压缩的**全部
+    /// 价值所在**，收窄它等于把压缩白做；参考件也是把 checkpoint 原样发给模型
+    /// （`to-llm-message.ts:311-325`）。兜底裁剪只作用在 checkpoint **之后**的
+    /// 新消息上。
+    ///
+    /// **为什么压缩产物不重写历史**：本卡只做「决策 + 提示词构造 + 产物落历史」，
+    /// 真实摘要调用（provider）尚未接线（见 `docs/compaction-status.md` 的
+    /// 「未做」节）。在接线之前，历史里**只有**落进会话的 checkpoint 消息才是
+    /// 压缩产物；本方法只负责**读**边界，不负责**造**摘要。
+    fn compacted_history(&self, history: &[Message]) -> Vec<Message> {
+        let bounded = compaction::history_from_latest_checkpoint(history);
+        match bounded.split_first() {
+            Some((checkpoint, rest)) if compaction::is_checkpoint(checkpoint) => {
+                let mut out = Vec::with_capacity(rest.len() + 1);
+                out.push(checkpoint.clone());
+                out.extend(fit_history(&narrow_history(rest)));
+                out
+            }
+            // 无 checkpoint ⇒ 纯兜底裁剪（与压缩路径接线前的行为逐条相同）。
+            _ => fit_history(&narrow_history(bounded)),
         }
     }
 
@@ -111,6 +150,28 @@ impl Runtime {
         MemoryEngine::new(paths, false)
             .read_identity()
             .unwrap_or_default()
+    }
+
+    /// 把压缩产物落进会话历史（照抄 opencode 的 checkpoint 落库语义）。
+    ///
+    /// 产物形态由 [`compaction::Compaction::apply`] 给出（`<conversation-checkpoint>`
+    /// 包裹段），本方法只负责**落库**：写一条消息 + 落一条 durable 事件。
+    ///
+    /// 事件 kind 用既有的 `"user"`：事件面是**冻结**的（`contracts-check` 的
+    /// `EVENT_KINDS` 与壳侧解码器逐项对齐，新增 kind 会被壳侧判为
+    /// `UnknownKind`），而参考件渲染给模型的 completed 压缩**本来就是一条
+    /// user 消息**（`to-llm-message.ts:311-325`）——故复用 `"user"` 既是参考件
+    /// 语义，也是本仓事件面的唯一合法承载。
+    ///
+    /// 本卡**不接线**真实 Provider：调用方自己拿到摘要文本后经本方法落库
+    /// （见 `docs/compaction-status.md` 的「未做」节）。
+    pub fn apply_compaction(&self, id: Uuid, content: &str) -> Result<Session, CoreError> {
+        let redacted = self.redact(content);
+        // 一次时钟读数同时用于消息与事件 payload（与 `send_text` 同一口径）。
+        let ts = self.turn_ts();
+        let session = self.push_message(id, Role::User, redacted.clone(), None, ts)?;
+        self.emit(&session, "user", json!({ "text": redacted, "tsMs": ts }))?;
+        Ok(session)
     }
 }
 
