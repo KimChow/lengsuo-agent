@@ -36,6 +36,7 @@ pub mod manifest;
 pub mod paths;
 pub mod registry;
 pub mod skills;
+pub mod team;
 pub mod validate;
 pub mod validate_errors;
 
@@ -56,5 +57,7 @@ pub use skills::{
     catalog_roots, mount_expert_skills, mounted_name, resolve_mounted, visible_skills,
     MountedSkill, VisibleSkill,
 };
+pub use team::packet::{Handoff, HandoffStatus, MemberHandoff, TaskPacket, TeamWorkflow};
+pub use team::TeamView;
 pub use validate::{RuleSet, ValidateContext, ValidationReport, Validator};
 pub use validate_errors::{ItemError, ValidateError};

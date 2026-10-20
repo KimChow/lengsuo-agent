@@ -1,0 +1,120 @@
+{
+  "name": "quant-research-team",
+  "version": "0.4.2",
+  "description": "Five isolated specialists reproduce a research report, design candidate factors, run platform experiments, audit overfit and publish one evidence-backed report.",
+  "expertType": "team",
+  "agentName": "qr-research-team",
+  "teamInfo": {
+    "leadAgent": "qr-research-team",
+    "memberAgents": [
+      "source-replicator",
+      "factor-engineer",
+      "platform-runner"
+    ]
+  },
+  "agents": [
+    "./agents/qr-research-team.md",
+    "./agents/source-replicator.md",
+    "./agents/factor-engineer.md",
+    "./agents/platform-runner.md"
+  ],
+  "displayName": {
+    "zh": "量化研究专家团",
+    "en": "Quant Research Team"
+  },
+  "profession": {
+    "zh": "量化研究专家团",
+    "en": "Quant Research Team"
+  },
+  "displayDescription": {
+    "zh": "量化研究专家团负责从研报复现、候选因子设计、平台实验执行到统计审计与绩效报告的全流程协作，每阶段以任务包派发、以交接包回传。",
+    "en": "The team covers replication, candidate design, platform runs, statistical audit and reporting, stage by stage."
+  },
+  "categoryId": "08-FinanceInvestment",
+  "defaultInitPrompt": {
+    "zh": "开始一次研究",
+    "en": "Start a study"
+  },
+  "tags": [
+    {
+      "zh": "量化",
+      "en": "quant"
+    },
+    {
+      "zh": "因子",
+      "en": "factor"
+    },
+    {
+      "zh": "研究",
+      "en": "research"
+    }
+  ],
+  "quickPrompts": [
+    {
+      "zh": "开始一次研究",
+      "en": "Start a study"
+    },
+    {
+      "zh": "审计过拟合",
+      "en": "Audit overfit"
+    },
+    {
+      "zh": "出绩效报告",
+      "en": "Write report"
+    }
+  ],
+  "members": [
+    {
+      "id": "qr-research-team",
+      "name": {
+        "zh": "齐研明",
+        "en": "Qi Yanming"
+      },
+      "profession": {
+        "zh": "研究团主理人",
+        "en": "Research Lead"
+      },
+      "avatar": "avatars/team.png",
+      "role": "lead"
+    },
+    {
+      "id": "source-replicator",
+      "name": {
+        "zh": "原文复现员",
+        "en": "Replicator"
+      },
+      "profession": {
+        "zh": "研报公式与回测底稿复现",
+        "en": "Report and backtest replication"
+      },
+      "avatar": "avatars/team.png",
+      "role": "lead"
+    },
+    {
+      "id": "factor-engineer",
+      "name": {
+        "zh": "因子工坊师",
+        "en": "Factor Engineer"
+      },
+      "profession": {
+        "zh": "候选因子设计与未来函数检查",
+        "en": "Candidate design and lookahead checks"
+      },
+      "avatar": "avatars/team.png",
+      "role": "member"
+    },
+    {
+      "id": "platform-runner",
+      "name": {
+        "zh": "平台跑批员",
+        "en": "Platform Runner"
+      },
+      "profession": {
+        "zh": "平台预检预算审批与真实运行",
+        "en": "Preflight, budget approval and real runs"
+      },
+      "avatar": "avatars/team.png",
+      "role": "member"
+    }
+  ]
+}
