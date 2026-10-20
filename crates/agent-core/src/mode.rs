@@ -28,13 +28,20 @@ pub const READONLY_TOOLS: [&str; 8] = [
 ];
 
 /// 写/执行类逻辑工具名（craft 全集的写段；Plan 模式据此从全集剔除）。
-pub const WRITE_TOOLS: [&str; 6] = [
+///
+/// 记忆写工具（`memory.*` / `identity.set_soul`）与文件写工具同属写段：
+/// 规划态与只读态一律不可见，可见性由本集合统一决定，不再另设开关。
+pub const WRITE_TOOLS: [&str; 10] = [
     "fs.write",
     "fs.delete",
     "shell.exec",
     "task.create",
     "task.update",
     "skill.install",
+    "memory.set_user",
+    "memory.set_project",
+    "memory.append_daily",
+    "identity.set_soul",
 ];
 
 /// 规划门禁工具名（真门禁工具：进入规划 / 退出规划）。
@@ -219,6 +226,26 @@ mod tests {
             mode_tools(&Mode::Craft).is_subset(&expert.tools),
             "expert 白名单必须包含 craft 全集"
         );
+    }
+
+    /// 记忆写工具的可见性矩阵（M1 卡）。
+    ///
+    /// 只守相对口径（`.allows("名字")`），不锁死 `WRITE_TOOLS.len()` ——
+    /// 后续卡追加检索工具时本组断言不得被动变红。
+    #[test]
+    fn memory_write_tools_follow_write_segment_visibility() {
+        // Craft / Expert：进写集 ⇒ 可见。
+        assert!(mode_policy(Mode::Craft).allows("memory.set_user"));
+        assert!(mode_policy(Mode::Craft).allows("memory.set_project"));
+        assert!(mode_policy(Mode::Craft).allows("memory.append_daily"));
+        assert!(mode_policy(Mode::Expert).allows("memory.set_user"));
+        assert!(mode_policy(Mode::Expert).allows("identity.set_soul"));
+        // Plan 剔除全部写集（规划态禁写）。
+        assert!(!mode_policy(Mode::Plan).allows("memory.set_user"));
+        assert!(!mode_policy(Mode::Plan).allows("identity.set_soul"));
+        // Ask 只读白名单 / Quick 空集。
+        assert!(!mode_policy(Mode::Ask).allows("memory.set_user"));
+        assert!(!mode_policy(Mode::Quick).allows("memory.set_user"));
     }
 
     #[test]

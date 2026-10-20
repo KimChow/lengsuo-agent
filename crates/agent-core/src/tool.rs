@@ -117,6 +117,47 @@ impl ToolRegistry {
     }
 }
 
+/// 记忆写工具的执行体取值键（与 [`crate::runtime::Runtime::execute_memory_tool`]
+/// 的 `arg("date")` / `arg("text")` 一一对应）；注册表描述按此拼写，避免两处漂移。
+/// 生产与测试共用同一份定义，注册表是工具名的**唯一事实来源**。
+pub const MEMORY_WRITE_TOOL_SPECS: [(&str, &str); 4] = [
+    (
+        "memory.set_user",
+        "写入用户级记忆；参数 text（string，必填）。",
+    ),
+    (
+        "memory.set_project",
+        "写入项目级记忆；参数 text（string，必填）。",
+    ),
+    (
+        "memory.append_daily",
+        "按日期追加当日记忆；参数 date（string，必填，YYYY-MM-DD）、text（string，必填）。",
+    ),
+    (
+        "identity.set_soul",
+        "写入 AI 人格（soul）；参数 text（string，必填）。",
+    ),
+];
+
+/// 平台内置工具的默认注册表（生产路径与测试共用同一份定义，避免两处漂移）。
+///
+/// 先只收记忆写工具四项（M1）；`fs.*` / `shell.exec` 等名字的执行体状态尚未核实，
+/// 由后续各领域卡追加，避免造出「已注册但执行不了」的假象。
+pub fn default_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    for (name, description) in MEMORY_WRITE_TOOL_SPECS {
+        registry.register(ToolSpec {
+            name: name.to_string(),
+            description: description.to_string(),
+            kind: ToolKind::Write,
+            // 参数都是用户内容，可能含凭据样式串 —— 让权限门的敏感动作扫描生效。
+            sensitive_arguments: true,
+            timeout_ms: 5_000,
+        });
+    }
+    registry
+}
+
 /// 浏览器工具占位 trait（开工说明 §1：C/D 对接时再接实现）。
 pub trait BrowserTool: Send + Sync {
     /// 打开指定环境的 URL；v0 不实现，返回 `Unsupported`。
