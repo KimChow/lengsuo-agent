@@ -129,7 +129,16 @@ fn memory_update_midsession_reaches_next_turn_digest() {
         "本会话内项目记忆更新必须进下一回合摘要: {digest}"
     );
     // 摘要同步进 system prompt（Composer 记忆四段：身份/用户记忆/项目记忆/当日日志）。
-    // 契约演进：原单段标题 `## 记忆摘要` 已按 A1 卡拆为四段，此处断言新标题。
+    // 契约演进：原单段标题 `## 记忆摘要` 已按 A1 卡拆为四段，h3-memory-inject-4seg
+    // 卡正式接线：用户记忆落「## 用户记忆」段、项目记忆落「## 项目记忆」段。
+    assert!(
+        ctx.system_prompt.contains("## 用户记忆"),
+        "用户记忆段必须进 system prompt"
+    );
+    assert!(
+        ctx.system_prompt.contains("更新后的用户偏好：中文回复"),
+        "本会话内用户记忆更新必须进 system prompt"
+    );
     assert!(
         ctx.system_prompt.contains("## 项目记忆"),
         "项目记忆段必须进 system prompt"
@@ -171,7 +180,20 @@ fn disabled_after_update_sends_no_memory_layers() {
         "关闭记忆 ⇒ 本轮摘要必须为 None，实际 {:?}",
         off.memory_digest
     );
-    assert!(!off.system_prompt.contains("记忆摘要"));
+    // 关闭记忆 ⇒ 四段整块不出现（不留空标题）。
+    for title in [
+        "## 身份
+AI 名：",
+        "## 用户记忆",
+        "## 项目记忆",
+        "## 当日日志",
+    ] {
+        assert!(
+            !off.system_prompt.contains(title),
+            "关闭记忆时不得留下记忆段 {title}:\n{}",
+            off.system_prompt
+        );
+    }
     assert!(!off.system_prompt.contains("用户层机密偏好"));
     assert!(!off.system_prompt.contains("项目层机密约定"));
 }
@@ -249,7 +271,19 @@ fn compose_failure_yields_no_digest_and_warns_without_stale_fallback() {
         "旧敏感记忆不得回退进 system prompt:\n{}",
         second.system_prompt
     );
-    assert!(!second.system_prompt.contains("记忆摘要"));
+    // 读取失败 ⇒ 四段整块缺席（不留空标题、不回退旧内容）。
+    for title in [
+        "## 身份\nAI 名：",
+        "## 用户记忆",
+        "## 项目记忆",
+        "## 当日日志",
+    ] {
+        assert!(
+            !second.system_prompt.contains(title),
+            "读取失败时不得留下记忆段 {title}:\n{}",
+            second.system_prompt
+        );
+    }
 
     // 告警可观测：事件流里有 memory_compose_failed 的 warning。
     let warnings: Vec<String> = rt

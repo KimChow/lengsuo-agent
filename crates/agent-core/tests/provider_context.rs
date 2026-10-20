@@ -217,15 +217,18 @@ fn enabled_memory_digest_reaches_provider_input_redacted() {
         digest.contains("[用户记忆] 用户偏好简洁回复"),
         "记忆注入: {digest}"
     );
-    // 契约演进：原单段 `## 记忆摘要` 已按 A1 卡拆为四段（身份/用户记忆/项目记忆/当日日志）。
-    // 兼容期 `context.rs` 把整段 digest 暂放 `memory_project`，故此处**断言内容而非段名**
-    // （只守不变量：记忆内容必须进 system prompt；段名归属由 M3 正式拆分后再锚定）。
+    // 契约演进：原单段 `## 记忆摘要` 已按 A1 卡拆为四段，h3-memory-inject-4seg 卡
+    // 正式拆分接线：用户记忆落**「## 用户记忆」段**（不再带旧摘要的行内标签）。
     assert!(
         ctx.system_prompt.contains("用户偏好简洁回复"),
         "记忆内容必须进 system prompt:\n{}",
         ctx.system_prompt
     );
-    assert!(ctx.system_prompt.contains("[用户记忆] 用户偏好简洁回复"));
+    assert!(
+        ctx.system_prompt.contains("## 用户记忆"),
+        "用户记忆必须落「## 用户记忆」段:\n{}",
+        ctx.system_prompt
+    );
     // 凭据不进模型上下文（§6：脱敏后才可注入）
     assert!(
         !ctx.system_prompt.contains("supersecretvalue123"),
