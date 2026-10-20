@@ -30,9 +30,14 @@ impl MemoryPaths {
         self.home.join("identity")
     }
 
+    /// 用户记忆根：`<home>/memory`（检索工具的 `user:` 前缀根）。
+    pub fn user_memory_root(&self) -> PathBuf {
+        self.home.join("memory")
+    }
+
     /// 用户记忆文件：`<home>/memory/MEMORY.md`。
     pub fn user_memory_file(&self) -> PathBuf {
-        self.home.join("memory").join("MEMORY.md")
+        self.user_memory_root().join("MEMORY.md")
     }
 
     /// 项目记忆目录：`<workspace>/.lengsuo/memory`。
