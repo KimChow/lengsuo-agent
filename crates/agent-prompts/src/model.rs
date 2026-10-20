@@ -166,6 +166,67 @@ fn bool_str(value: bool) -> &'static str {
     }
 }
 
+/// 条件段判定式（07 册 §5 条件段实录的四类形态 + 「或」组合）。
+///
+/// 判定是**对 [`PromptVars`] 的纯函数**：无 IO、无模型调用、无时钟；
+/// 同一份变量与模式必得同一结论（渲染确定性不因此放宽）。
+///
+/// 形态对应参考实录：
+/// - `True`：`IsWindows` / `ExpertManagementEnabled` 一类的布尔开关；
+/// - `Eq`：`workMode == "ask"` 一类的等值判断（左键为保留键 `work_mode` 时
+///   与模板自身模式比较，其余为变量等值）；
+/// - `AnyNonEmpty`：`WorkingMemoryContent or UserLocalMemoryContent or
+///   UserMemoryContent` 一类的「任一非空」；
+/// - `Contains`：`'中文' in ResponseLanguage` 一类的包含判断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cond {
+    /// 布尔变量为真（`is_windows` / `feature_expert_management` 等）。
+    True(&'static str),
+    /// 变量等于字面值；左键为保留键 `work_mode` 时与模板自身模式比较。
+    Eq(&'static str, &'static str),
+    /// 任一变量非空（`a or b or c` 形态）。
+    AnyNonEmpty(&'static [&'static str]),
+    /// 变量包含子串（`'中文' in response_language` 形态）。
+    Contains(&'static str, &'static str),
+    /// 若干条件的「或」组合（`A or B or C`）。
+    Any(&'static [Cond]),
+}
+
+/// 判定 `work_mode` 时使用的保留键（值取自模板自身模式，不进 [`PromptVars`]）。
+pub const WORK_MODE_KEY: &str = "work_mode";
+
+impl Cond {
+    /// 判定条件是否成立。
+    ///
+    /// 纯函数：只看变量值与模板模式，不读文件、不取时钟、不调用模型。
+    pub fn holds(&self, vars: &PromptVars, mode: PromptMode) -> bool {
+        match self {
+            Cond::True(key) => vars.get(key) == Some("true"),
+            Cond::Eq(key, value) => {
+                if *key == WORK_MODE_KEY {
+                    mode.as_str() == *value
+                } else {
+                    vars.get(key) == Some(*value)
+                }
+            }
+            Cond::AnyNonEmpty(keys) => keys.iter().any(|key| is_filled(vars, key)),
+            Cond::Contains(key, needle) => vars
+                .get(key)
+                .is_some_and(|value| value.contains(needle)),
+            Cond::Any(conds) => conds.iter().any(|cond| cond.holds(vars, mode)),
+        }
+    }
+}
+
+/// 变量是否「有内容」：非纯空白；布尔字段的 `false` 视为无内容。
+fn is_filled(vars: &PromptVars, key: &str) -> bool {
+    match vars.get(key) {
+        Some("false") => false,
+        Some(value) => !value.trim().is_empty(),
+        None => false,
+    }
+}
+
 /// 模板的一段。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Segment {
@@ -176,6 +237,9 @@ pub enum Segment {
     Var(&'static str),
     /// 规划门禁片段（仅 plan 模板使用）。
     Gate,
+    /// 条件段：条件成立才渲染整段，条件不成立则**整段省略**
+    /// （与既有空值省略语义一致）；条件是 [`Cond`]（对变量的纯函数判定）。
+    If(Cond, Vec<Segment>),
 }
 
 /// 一个模式的模板：模式 + 段序列。
@@ -199,23 +263,46 @@ impl PromptTemplate {
     }
 
     /// 渲染为提示词文本：段间以空行分隔，空槽位整段省略，末尾保留单个换行。
+    ///
+    /// 条件段（[`Segment::If`]）：条件成立才渲染其内层段；不成立则整段省略，
+    /// 不留空洞标题、不留多余空行。
     pub fn render(&self, vars: &PromptVars) -> String {
         let mut parts: Vec<String> = Vec::with_capacity(self.segments.len());
-        for segment in &self.segments {
-            let rendered = match segment {
-                Segment::Text(text) => Some(substitute(text, vars)),
-                Segment::Var(key) => slot(key, vars),
-                Segment::Gate => trim(crate::template::PLAN_GATE),
-            };
-            if let Some(part) = rendered {
-                if !part.trim().is_empty() {
-                    parts.push(part);
-                }
-            }
-        }
+        render_segments(&self.segments, vars, self.mode, &mut parts);
         let mut out = parts.join("\n\n");
         out.push('\n');
         out
+    }
+}
+
+/// 渲染一段段序列（含条件段的内层递归），把非空段追加到 `parts`。
+fn render_segments(
+    segments: &[Segment],
+    vars: &PromptVars,
+    mode: PromptMode,
+    parts: &mut Vec<String>,
+) {
+    for segment in segments {
+        match segment {
+            Segment::Text(text) => push_part(parts, Some(substitute(text, vars))),
+            Segment::Var(key) => push_part(parts, slot(key, vars)),
+            Segment::Gate => push_part(parts, trim(crate::template::PLAN_GATE)),
+            // 条件不成立 ⇒ 整段省略（与空值省略语义一致）。
+            Segment::If(cond, inner) => {
+                if cond.holds(vars, mode) {
+                    render_segments(inner, vars, mode, parts);
+                }
+            }
+        }
+    }
+}
+
+/// 追加一段：空段（纯空白）不进列表，避免留下空洞标题。
+fn push_part(parts: &mut Vec<String>, part: Option<String>) {
+    if let Some(part) = part {
+        if !part.trim().is_empty() {
+            parts.push(part);
+        }
     }
 }
 
