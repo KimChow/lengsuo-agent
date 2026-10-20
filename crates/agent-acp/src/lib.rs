@@ -43,6 +43,7 @@ pub mod codec;
 pub mod control;
 pub mod error;
 pub mod host;
+pub mod host_baseline;
 mod host_router;
 mod host_send;
 pub mod message;
@@ -67,6 +68,7 @@ pub use error::Error;
 pub use host::{
     Host, HostConfig, HostEvent, NextEvent as HostNextEvent, DEFAULT_MAX_EVENTS as HOST_MAX_EVENTS,
 };
+pub use host_baseline::{register_baseline, BaselineConfig, BASELINE_METHODS};
 pub use message::{
     JsonRpcErrorObject, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, JsonRpcVersion,
     Message, RequestId, JSONRPC_ERROR_INVALID_PARAMS, JSONRPC_ERROR_INVALID_REQUEST,
