@@ -5,6 +5,7 @@ members = [
     "crates/agent-core",
     "crates/contracts-check",
     "crates/agent-execpolicy",
+    "crates/agent-expert",
     "crates/agent-gateway",
     "crates/agent-mcp",
     "crates/agent-memory",

@@ -1,0 +1,12 @@
+[package]
+name = "agent-expert"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "专家包：manifest 数据结构、校验器与发现注册表（专家体系的实体层）"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
