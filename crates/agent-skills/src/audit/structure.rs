@@ -239,6 +239,8 @@ fn stays_inside(path: &Path, skill_dir: &Path) -> bool {
     let Ok(canonical) = path.canonicalize() else {
         return false;
     };
-    let base = skill_dir.canonicalize().unwrap_or_else(|_| skill_dir.to_path_buf());
+    let base = skill_dir
+        .canonicalize()
+        .unwrap_or_else(|_| skill_dir.to_path_buf());
     canonical.starts_with(&base)
 }
