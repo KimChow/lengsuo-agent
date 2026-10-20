@@ -85,6 +85,11 @@ impl Runtime {
     }
 
     /// 模板变量：身份层 + 工作区 + 日期 + 用户规则（v0 空）+ 已启用记忆摘要。
+    ///
+    /// **临时兼容（h1-prompt-vars）**：`PromptVars` 已扩容为 22 字段、记忆拆为四段，
+    /// 但本卡只做数据面。此处把现有单段摘要整体塞进 `memory_project`，其余记忆段留空；
+    /// 产品/身份/风格/专家人格/语言/平台/功能开关/工具呈现/产物目录等新变量暂给默认值
+    /// （字符串空、布尔 `false`）。**正式拆分与接线由 M3 / A7 卡完成**。
     fn prompt_vars(&self, session: &Session, digest: Option<&str>) -> PromptVars {
         let identity = self.read_identity(&session.workspace_root);
         PromptVars {
@@ -94,7 +99,8 @@ impl Runtime {
             workspace: self.redact(&session.workspace_root),
             date: date_text(),
             user_rules: String::new(),
-            memory_digest: digest.unwrap_or_default().to_string(),
+            memory_project: digest.unwrap_or_default().to_string(),
+            ..PromptVars::default()
         }
     }
 

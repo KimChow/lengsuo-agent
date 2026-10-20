@@ -37,38 +37,132 @@ impl PromptMode {
 }
 
 /// 注入模板的变量集。全部由调用方提供（引擎不取时钟、不读环境、不做 IO）。
+///
+/// 字段顺序即模板变量的分组顺序：产品 → 身份 → 环境 → 规则/风格 → 专家人格 →
+/// 语言/平台 → 功能开关 → 工具呈现 → 记忆四段（身份/用户/项目/当日）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PromptVars {
+    /// 产品名。
+    pub product_name: String,
+    /// 数据目录名。
+    pub data_folder_name: String,
     /// 助手名称。
     pub ai_name: String,
     /// 用户称呼。
     pub user_name: String,
-    /// 人格设定文本。
+    /// 人格设定文本（SOUL.md）。
     pub soul: String,
+    /// 身份层内容（IDENTITY.md）。
+    pub identity: String,
+    /// 引导内容（BOOTSTRAP.md）；onboarding 分支使用，本卡仅作数据面。
+    pub bootstrap: String,
     /// 工作区路径或描述。
     pub workspace: String,
     /// 日期文本（来源由调用方决定，保证输出确定性）。
     pub date: String,
     /// 用户自定义规则；非空时追加为独立段。
     pub user_rules: String,
-    /// 三层记忆组装后的摘要文本；可为空。
-    pub memory_digest: String,
+    /// 风格层文本；本卡仅作数据面。
+    pub tone_style: String,
+    /// 专家人格注入点。
+    pub plugin_agent_prompt: String,
+    /// 子代理人格；可留空。
+    pub sub_agent_prompt: String,
+    /// 回复语言。
+    pub response_language: String,
+    /// 是否 Windows 平台（平台条件段用；本卡仅作数据面）。
+    pub is_windows: bool,
+    /// 浏览器能力开关。
+    pub feature_browser_use: bool,
+    /// 桌面操作能力开关。
+    pub feature_computer_use: bool,
+    /// 专家管理能力开关。
+    pub feature_expert_management: bool,
+    /// 工具结果呈现提示。
+    pub tool_result_presentation: String,
+    /// 产物目录。
+    pub artifact_dir: String,
+    /// 记忆·身份层（AI 名/用户名/SOUL）。
+    pub memory_identity: String,
+    /// 记忆·用户记忆（上限 4000 字符，由注入方保证）。
+    pub memory_user: String,
+    /// 记忆·项目记忆（上限 3000 字符，由注入方保证）。
+    pub memory_project: String,
+    /// 记忆·当日日志尾（上限 2000 字符，由注入方保证）。
+    pub memory_daily: String,
 }
 
+/// 模板可注入键的全集（snake_case，与字段名逐字一致）。
+///
+/// 布尔字段以 `"true"` / `"false"` 形式可被 `{{key}}` 替换；测试用它遍历断言
+/// 「每个键都有值」，避免新增字段时漏挂 key。
+pub const PROMPT_VAR_KEYS: [&str; 24] = [
+    "product_name",
+    "data_folder_name",
+    "ai_name",
+    "user_name",
+    "soul",
+    "identity",
+    "bootstrap",
+    "workspace",
+    "date",
+    "user_rules",
+    "tone_style",
+    "plugin_agent_prompt",
+    "sub_agent_prompt",
+    "response_language",
+    "is_windows",
+    "feature_browser_use",
+    "feature_computer_use",
+    "feature_expert_management",
+    "tool_result_presentation",
+    "artifact_dir",
+    "memory_identity",
+    "memory_user",
+    "memory_project",
+    "memory_daily",
+];
+
 impl PromptVars {
-    /// 按变量名取值；未知键返回 `None`。
+    /// 按变量名取值；未知键返回 `None`。布尔字段返回 `"true"` / `"false"`。
     pub fn get(&self, key: &str) -> Option<&str> {
         let value = match key {
+            "product_name" => &self.product_name,
+            "data_folder_name" => &self.data_folder_name,
             "ai_name" => &self.ai_name,
             "user_name" => &self.user_name,
             "soul" => &self.soul,
+            "identity" => &self.identity,
+            "bootstrap" => &self.bootstrap,
             "workspace" => &self.workspace,
             "date" => &self.date,
             "user_rules" => &self.user_rules,
-            "memory_digest" => &self.memory_digest,
+            "tone_style" => &self.tone_style,
+            "plugin_agent_prompt" => &self.plugin_agent_prompt,
+            "sub_agent_prompt" => &self.sub_agent_prompt,
+            "response_language" => &self.response_language,
+            "is_windows" => bool_str(self.is_windows),
+            "feature_browser_use" => bool_str(self.feature_browser_use),
+            "feature_computer_use" => bool_str(self.feature_computer_use),
+            "feature_expert_management" => bool_str(self.feature_expert_management),
+            "tool_result_presentation" => &self.tool_result_presentation,
+            "artifact_dir" => &self.artifact_dir,
+            "memory_identity" => &self.memory_identity,
+            "memory_user" => &self.memory_user,
+            "memory_project" => &self.memory_project,
+            "memory_daily" => &self.memory_daily,
             _ => return None,
         };
-        Some(value.as_str())
+        Some(value)
+    }
+}
+
+/// 布尔变量的文本形态（模板替换只需纯文本，无需真值语义）。
+fn bool_str(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
     }
 }
 
@@ -77,7 +171,7 @@ impl PromptVars {
 pub enum Segment {
     /// 字面文本，可含 `{{key}}` 注入点。
     Text(String),
-    /// 独立段落槽位：`soul` / `memory_digest` / `user_rules` 带各自标题成段，
+    /// 独立段落槽位：`soul` / 记忆四段 / `user_rules` 带各自标题成段，
     /// 其余已知变量输出裸值，未知键与空值整段省略。
     Var(&'static str),
     /// 规划门禁片段（仅 plan 模板使用）。
@@ -157,13 +251,16 @@ fn substitute(text: &str, vars: &PromptVars) -> String {
 }
 
 /// 槽位渲染：值非空（且非纯空白）时成段，否则整段省略，不留空洞标记。
-/// 三段可独立成节（人格设定 / 记忆摘要 / 用户自定义规则）；
+/// 六段可独立成节（人格设定 / 记忆四段 / 用户自定义规则）；
 /// 其余已知变量作为独立段时输出裸值；未知键省略。
 fn slot(key: &'static str, vars: &PromptVars) -> Option<String> {
     let value = vars.get(key).and_then(trim)?;
     match key {
         "soul" => Some(format!("人格设定：\n{value}")),
-        "memory_digest" => Some(format!("## 记忆摘要\n{value}")),
+        "memory_identity" => Some(format!("## 身份\n{value}")),
+        "memory_user" => Some(format!("## 用户记忆\n{value}")),
+        "memory_project" => Some(format!("## 项目记忆\n{value}")),
+        "memory_daily" => Some(format!("## 当日日志\n{value}")),
         "user_rules" => Some(format!("## 用户自定义规则\n{value}")),
         _ => Some(value),
     }

@@ -9,7 +9,7 @@ use common::{
     ALL_MODES, CRAFT_LINES, GATE_LINES,
 };
 
-// ---- 公共头：身份 + 日期 + 工作区 + 记忆摘要 ----
+// ---- 公共头：身份 + 日期 + 工作区 + 记忆四段 ----
 
 #[test]
 fn common_header_carries_identity_date_workspace_memory() {
@@ -21,8 +21,20 @@ fn common_header_carries_identity_date_workspace_memory() {
         assert!(out.contains("DATE-2026-05-06"), "{mode:?} 缺 date");
         assert!(out.contains("WS-/home/kim/demo"), "{mode:?} 缺 workspace");
         assert!(
-            out.contains("## 记忆摘要\nMEM-项目：提示词引擎"),
-            "{mode:?} 缺记忆摘要"
+            out.contains("## 身份\nMEMID-身份层：小澜"),
+            "{mode:?} 缺记忆身份层"
+        );
+        assert!(
+            out.contains("## 用户记忆\nMEMUSR-用户偏好中文提交信息"),
+            "{mode:?} 缺用户记忆"
+        );
+        assert!(
+            out.contains("## 项目记忆\nMEM-项目：提示词引擎"),
+            "{mode:?} 缺项目记忆"
+        );
+        assert!(
+            out.contains("## 当日日志\nMEMDAY-当日：完成 PromptVars 扩容"),
+            "{mode:?} 缺当日日志"
         );
         assert!(!out.contains('{'), "{mode:?} 残留未替换的花括号");
     }

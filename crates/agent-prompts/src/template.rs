@@ -43,15 +43,19 @@ fn text(value: &str) -> Segment {
     Segment::Text(value.to_string())
 }
 
-/// 公共头：身份（ai_name/user_name/soul）+ 环境（date/workspace）+ 记忆摘要。
+/// 公共头：身份（ai_name/user_name/soul）+ 环境（date/workspace）+ 记忆四段。
 /// 每个模式带自己的标题行，使不同模式的输出必然不同。
+/// 记忆四段按 身份 → 用户 → 项目 → 当日 顺序独立成段，空段整段省略。
 fn header(mode: PromptMode) -> Vec<Segment> {
     vec![
         text(&format!("# 系统提示词 · 模式：{}", mode.as_str())),
         text("## 身份\n你是 {{ai_name}}（Lengsuo 智能体工作平台的执行助手）。本次服务对象：{{user_name}}。"),
         Segment::Var("soul"),
         text("## 环境\n- 日期：{{date}}\n- 工作区：{{workspace}}"),
-        Segment::Var("memory_digest"),
+        Segment::Var("memory_identity"),
+        Segment::Var("memory_user"),
+        Segment::Var("memory_project"),
+        Segment::Var("memory_daily"),
     ]
 }
 
