@@ -27,31 +27,20 @@
 /// `crates/contracts-check/tests/method_ledger.rs::contract_actions_mirror_the_authoritative_list`
 /// 的**双向差集相等断言**守住：镜像与权威清单必须逐项相等，否则红。
 pub const ACTIONS: &[&str] = &[
-    // 行 24：session:list（会话列表）
-    "session:list",
-    // 行 24：session:create（创建会话）
-    "session:create",
-    // 行 24：session:get（读取单个会话）
-    "session:get",
-    // 行 24：session:send（发送用户输入）
-    "session:send",
-    // 行 24：session:stop（停止会话）
-    "session:stop",
+    "session:list",   // 行 24：session:list（会话列表）
+    "session:create", // 行 24：session:create（创建会话）
+    "session:get",    // 行 24：session:get（读取单个会话）
+    "session:send",   // 行 24：session:send（发送用户输入）
+    "session:stop",   // 行 24：session:stop（停止会话）
     // 08b9f40 新增（非行 24 冻结项；台账 docs/contracts/acp-method-ledger.md §1）：
     // session:cancel（取消当前回合，fire-and-forget，立即回快照）
     "session:cancel",
-    // 行 24：session:replay（事件回放；payload {id, afterSeq, limit?}）
-    "session:replay",
-    // 行 24：approval:respond（审批应答）
-    "approval:respond",
-    // 行 24：config:get（读配置）
-    "config:get",
-    // 行 24：config:set（写配置）
-    "config:set",
-    // 行 24：tool:list（工具清单）
-    "tool:list",
-    // 行 24：sys:ping（健康检查）
-    "sys:ping",
+    "session:replay", // 行 24：session:replay（事件回放；payload {id, afterSeq, limit?}）
+    "approval:respond", // 行 24：approval:respond（审批应答）
+    "config:get",     // 行 24：config:get（读配置）
+    "config:set",     // 行 24：config:set（写配置）
+    "tool:list",      // 行 24：tool:list（工具清单）
+    "sys:ping",       // 行 24：sys:ping（健康检查）
 ];
 
 /// ACP 标准方法名（斜杠式），共 13 项——与 `agent-acp` 的 `method` 模块
@@ -72,32 +61,19 @@ pub const ACTIONS: &[&str] = &[
 /// 不要在这里删项：本常量是 ACP 方法面的单一冻结来源，删项会让上述相等断言
 /// 静默少跑一圈。
 pub const ACP_METHODS: &[&str] = &[
-    // agent-acp method::INITIALIZE
-    "initialize",
-    // agent-acp method::AUTHENTICATE
-    "authenticate",
-    // agent-acp method::SESSION_NEW
-    "session/new",
-    // agent-acp method::SESSION_LOAD
-    "session/load",
-    // agent-acp method::SESSION_RESUME
-    "session/resume",
-    // agent-acp method::SESSION_PROMPT
-    "session/prompt",
-    // agent-acp method::SESSION_CANCEL（通知）
-    "session/cancel",
-    // agent-acp method::SESSION_UPDATE（通知）
-    "session/update",
-    // agent-acp method::SESSION_SET_MODE
-    "session/set_mode",
-    // agent-acp method::SESSION_REQUEST_PERMISSION
-    "session/request_permission",
-    // agent-acp method::LOGOUT
-    "logout",
-    // agent-acp method::ELICITATION_CREATE
-    "elicitation/create",
-    // agent-acp method::ELICITATION_COMPLETE
-    "elicitation/complete",
+    "initialize",                 // agent-acp method::INITIALIZE
+    "authenticate",               // agent-acp method::AUTHENTICATE
+    "session/new",                // agent-acp method::SESSION_NEW
+    "session/load",               // agent-acp method::SESSION_LOAD
+    "session/resume",             // agent-acp method::SESSION_RESUME
+    "session/prompt",             // agent-acp method::SESSION_PROMPT
+    "session/cancel",             // agent-acp method::SESSION_CANCEL（通知）
+    "session/update",             // agent-acp method::SESSION_UPDATE（通知）
+    "session/set_mode",           // agent-acp method::SESSION_SET_MODE
+    "session/request_permission", // agent-acp method::SESSION_REQUEST_PERMISSION
+    "logout",                     // agent-acp method::LOGOUT
+    "elicitation/create",         // agent-acp method::ELICITATION_CREATE
+    "elicitation/complete",       // agent-acp method::ELICITATION_COMPLETE
 ];
 
 /// 网关 ACP 转发白名单的**当前快照**（本卡：**快照**，**非不变量**）。
@@ -112,6 +88,41 @@ pub const ACP_METHODS: &[&str] = &[
 ///
 /// 本卡**不新增**白名单成员（见 `docs/contracts/acp-method-ledger.md` §5）。
 pub const ACP_FORWARD_WHITELIST_SNAPSHOT: &[&str] = &["sys:ping"];
+
+// ---- 动作分派面：`/rpc` 动作 → 应答路径（台账 `acp-method-ledger.md` §7） ----
+//
+// 分派顺序：`rpc.rs::run`（130）第一句 `acp_forward(...)?`（113）命中即返回，否则落到
+// `match action`（131）本地实现。下列常量皆**快照**，只守 `tests/action_dispatch_surface.rs`
+// 的关系，不得锁数量或取值。
+
+/// 走 ACP 旁路转发的动作——`rpc.rs:43` `ACP_FORWARD_ACTIONS` 的镜像快照。
+/// 同 [`ACP_FORWARD_WHITELIST_SNAPSHOT`]（后者只守 ⊆ `ACTIONS`）；本常量另守
+/// 「源码白名单 == 镜像」「与 `ACP_METHODS` 不相交」。
+pub const ACP_FORWARDED_ACTIONS: &[&str] = &["sys:ping"]; // rpc.rs:43 `ACP_FORWARD_ACTIONS`
+
+/// 同时在「本地实现」与「ACP 旁路」两侧都有实现的动作（**双路径动作**）。
+/// 挂 `acp` 时由 host 应答、未挂时由 `run()` 本地区应答；两侧语义**不同**（`sys:ping`
+/// 分别回 host pid / 网关 pid），故成员须在 [`LOCAL_DISPATCH_ACTIONS`] 与
+/// [`ACP_FORWARDED_ACTIONS`] 里**都在**——本地那份是未挂 `acp` 时的退路，
+/// 删掉即让该部署形态静默回落 `-32601`。
+pub const DUAL_PATH_ACTIONS: &[&str] = &["sys:ping"];
+
+/// `rpc.rs::run()` 里 `match action`（131）本地实现覆盖的动作，源码扫描的比对基准；
+/// 与 [`ACTIONS`] **集合相等**（`tests/action_dispatch_surface.rs`）。
+pub const LOCAL_DISPATCH_ACTIONS: &[&str] = &[
+    "sys:ping",         // rpc.rs:132
+    "config:get",       // rpc.rs:133
+    "config:set",       // rpc.rs:141
+    "session:list",     // rpc.rs:149
+    "session:create",   // rpc.rs:150
+    "session:get",      // rpc.rs:186
+    "session:send",     // rpc.rs:187
+    "session:stop",     // rpc.rs:199
+    "session:cancel",   // rpc.rs:205
+    "session:replay",   // rpc.rs:207
+    "tool:list",        // rpc.rs:222
+    "approval:respond", // rpc.rs:250
+];
 
 /// v0 全部事件 kind，共 11 项——与 `agent-core::schema::EventKind` **逐项对齐**。
 ///
@@ -130,28 +141,17 @@ pub const ACP_FORWARD_WHITELIST_SNAPSHOT: &[&str] = &["sys:ping"];
 /// 不要在这里删掉任何一项：本常量是事件面的单一冻结来源，删项会让
 /// `tests/event_surface.rs` 的穷举断言静默少跑一圈。
 pub const EVENT_KINDS: &[&str] = &[
-    // agent-core EventKind::Thinking
-    "thinking",
-    // agent-core EventKind::Text
-    "text",
-    // agent-core EventKind::ToolUse
-    "tool_use",
-    // agent-core EventKind::ToolResult
-    "tool_result",
-    // agent-core EventKind::ApprovalRequest
-    "approval_request",
-    // agent-core EventKind::ApprovalResolved（第 23 行缺席，见常量文档注释）
-    "approval_resolved",
-    // agent-core EventKind::Files
-    "files",
-    // agent-core EventKind::Done
-    "done",
-    // agent-core EventKind::Error（第 23 行缺席，见常量文档注释）
-    "error",
-    // agent-core EventKind::SessionUpdate
-    "session_update",
-    // 持久化事件 `user`（非 `agent-core::schema::EventKind` 变体，见常量文档注释）
-    "user",
+    "thinking",          // agent-core EventKind::Thinking
+    "text",              // agent-core EventKind::Text
+    "tool_use",          // agent-core EventKind::ToolUse
+    "tool_result",       // agent-core EventKind::ToolResult
+    "approval_request",  // agent-core EventKind::ApprovalRequest
+    "approval_resolved", // agent-core EventKind::ApprovalResolved（第 23 行缺席，见常量文档注释）
+    "files",             // agent-core EventKind::Files
+    "done",              // agent-core EventKind::Done
+    "error",             // agent-core EventKind::Error（第 23 行缺席，见常量文档注释）
+    "session_update",    // agent-core EventKind::SessionUpdate
+    "user", // 持久化事件 `user`（非 `agent-core::schema::EventKind` 变体，见常量文档注释）
 ];
 
 /// `AGENT-KICKOFF.md` 第 22 行「信封」**逐字冻结**的响应码（4 项）。
