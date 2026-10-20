@@ -13,6 +13,9 @@ agent-execpolicy = { path = "../agent-execpolicy" }
 agent-memory = { path = "../agent-memory" }
 agent-prompts = { path = "../agent-prompts" }
 agent-tasks = { path = "../agent-tasks" }
+agent-skills = { path = "../agent-skills" }
+agent-mcp = { path = "../agent-mcp" }
+credential-ref = { path = "../credential-ref" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

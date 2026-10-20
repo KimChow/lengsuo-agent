@@ -57,12 +57,15 @@ name = "agent-core"
 version = "0.1.0"
 dependencies = [
  "agent-execpolicy",
+ "agent-mcp",
  "agent-memory",
  "agent-prompts",
  "agent-sandbox",
+ "agent-skills",
  "agent-tasks",
  "agent-tools-exec",
  "chrono",
+ "credential-ref",
  "regex",
  "serde",
  "serde_json",
