@@ -15,6 +15,7 @@ agent-prompts = { path = "../agent-prompts" }
 agent-tasks = { path = "../agent-tasks" }
 agent-skills = { path = "../agent-skills" }
 agent-mcp = { path = "../agent-mcp" }
+agent-expert = { path = "../agent-expert" }
 credential-ref = { path = "../credential-ref" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde = { workspace = true }
