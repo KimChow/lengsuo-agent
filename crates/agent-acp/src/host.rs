@@ -31,6 +31,10 @@
 //! 拆除：`stop() → sink 关闭 → 分派线程退出 → 一次性执行 Transport 的拆除钩子`，
 //! [`Drop`] 自动执行且幂等（对齐 [`crate::client::Client`] 的拆除语义）。
 //!
+//! **基线方法（opt-in）**：[`crate::host_baseline::register_baseline`] 提供
+//! `initialize` / `logout` 两个零副作用方法；[`Host::new`] 不自动注册，
+//! 调用方需显式启用（空表 → 未注册即 `-32601` 的语义保持不变）。
+//!
 //! 文件切分（单文件 400 行软目标）：本文件是角色门面与文档；读侧状态机在
 //! [`crate::host_router`]（归类语义 + 计数），写侧与生命周期在
 //! [`crate::host_send`]（`Host` 的 `impl` 与 `Drop`）。三者的语义是同一张表。
