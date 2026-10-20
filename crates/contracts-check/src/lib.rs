@@ -16,6 +16,16 @@
 /// （`session:replay` 为 2026-10-19「只增不改」追加，同见该行）。
 /// 第 12 项 `session:cancel` **不在**第 24 行内，是 `08b9f40` 新增、经
 /// `docs/contracts/acp-method-ledger.md` §1 补登记的追加项。
+///
+/// **本常量是「镜像」，权威来源在 `agent-gateway`**：
+/// `crates/agent-gateway/src/actions.rs::V0_ACTIONS`（该 crate 正是实现
+/// `域:动作` 路由的地方，清单与实现同侧才谈得上「清单即实现的镜像」）。
+/// 之所以不能直接 `pub use agent_gateway::V0_ACTIONS as ACTIONS`：
+/// `agent-gateway` 在本 crate 是 **dev-dependency**，而本文件是 **lib 目标**
+/// ——dev-dependency 对 lib 目标不可用，而 `Cargo.toml` 属共享区（本卡不改）。
+/// 故此处保留字面量镜像，由
+/// `crates/contracts-check/tests/method_ledger.rs::contract_actions_mirror_the_authoritative_list`
+/// 的**双向差集相等断言**守住：镜像与权威清单必须逐项相等，否则红。
 pub const ACTIONS: &[&str] = &[
     // 行 24：session:list（会话列表）
     "session:list",
