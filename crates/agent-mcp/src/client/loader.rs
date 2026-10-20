@@ -1,6 +1,6 @@
 //! `mcp.json` 加载器：路径约定、三条强校验与合并语义。
 //!
-//! 规格对齐 reference-docs 18 册 §9.2（原文亦见
+//! 规格对齐本地对照资料 18 册 §9.2（原文亦见
 //! `crates/agent-prompts/assets/safety-rules.md`）：
 //! - 路径固定为 `<data_root>/mcp.json`——**无点前缀**，不是 `.mcp.json`；
 //! - 格式与 Claude Desktop 相同：`{"mcpServers": {"<name>": {...}}}`；

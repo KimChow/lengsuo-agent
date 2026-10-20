@@ -1,6 +1,6 @@
 //! 专家包 manifest 结构体测试。
 //!
-//! 样本来源：`~/ref/reference-samples/expert-samples/{senior-developer,pandaai-team}`
+//! 样本来源：本地对照资料（不入库）中的 expert-samples/{senior-developer,pandaai-team}
 //! 的 `.codebuddy-plugin/plugin.json`，**逐字复制**进 `tests/fixtures/`
 //! （CI 上无 `/home/ubuntu/ref` 路径，故不写死绝对路径）。
 //!
