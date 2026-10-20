@@ -27,16 +27,20 @@
 
 mod discover;
 mod model;
+mod ops;
+mod time;
+
+use time::now_rfc3339_millis;
 
 pub use model::{
     ExpertOrigin, ExpertScope, OverrideRecord, RegistryEntry, RegistryFile, REGISTRY_SCHEMA_VERSION,
 };
+pub use ops::{register_expert, unregister_expert};
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::ExpertError;
 use crate::manifest::{CategoryId, ExpertManifest, ExpertType};
@@ -107,6 +111,8 @@ impl ExpertPackage {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExpertRegistry {
     entries: Vec<RegistryEntry>,
+    /// 运行时目录索引（`id -> 包目录`）：**不序列化**，供导出定位（卡 8）。
+    dirs: BTreeMap<String, PathBuf>,
 }
 
 impl ExpertRegistry {
@@ -180,7 +186,10 @@ impl ExpertRegistry {
                     .collect(),
             })
             .collect();
-        Self { entries }
+        Self {
+            entries,
+            ..Self::default()
+        }
     }
 
     /// 读取注册表；**文件缺失 ⇒ 扫盘重建**（不报错）。
@@ -214,6 +223,7 @@ impl ExpertRegistry {
                 }
                 let loaded = Self {
                     entries: file.experts,
+                    ..Self::default()
                 };
                 // 注册表是索引：与磁盘漂移时以目录为准（§4.1 第 3 条）。
                 Ok(if loaded.same_truth_as(&disk) {
@@ -361,36 +371,4 @@ fn relative_to(base: &Path, target: &Path) -> String {
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default(),
     }
-}
-
-/// 当前 UTC 时间（RFC3339，毫秒精度）——`registeredAt` 用。
-fn now_rfc3339_millis() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs() as i64;
-    let days = secs.div_euclid(86_400);
-    let sod = secs.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        sod / 3600,
-        (sod % 3600) / 60,
-        sod % 60,
-        now.subsec_millis()
-    )
-}
-
-/// 天数 → 公历年月日（Howard Hinnant `civil_from_days` 算法）。
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if month <= 2 { y + 1 } else { y }, month, day)
 }
