@@ -52,6 +52,9 @@ pub use registry::{
     ExpertOrigin, ExpertPackage, ExpertRegistry, ExpertRoot, ExpertScope, OverrideRecord,
     RegistryEntry, RegistryFile, ShadowedExpert,
 };
-pub use skills::{MountedSkill, VisibleSkill, catalog_roots, mount_expert_skills, mounted_name, resolve_mounted, visible_skills};
+pub use skills::{
+    catalog_roots, mount_expert_skills, mounted_name, resolve_mounted, visible_skills,
+    MountedSkill, VisibleSkill,
+};
 pub use validate::{RuleSet, ValidateContext, ValidationReport, Validator};
 pub use validate_errors::{ItemError, ValidateError};
