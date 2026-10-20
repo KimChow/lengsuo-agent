@@ -39,6 +39,65 @@ pub const ACTIONS: &[&str] = &[
     "sys:ping",
 ];
 
+/// ACP 标准方法名（斜杠式），共 13 项——与 `agent-acp` 的 `method` 模块
+/// **逐项对齐**。
+///
+/// 真相来源：`crates/agent-acp/src/methods.rs` 的 `pub mod method`（13 个
+/// `pub const`，见 `docs/contracts/acp-method-ledger.md` §2）。命名按 ACP 0.25.0
+/// 斜杠写法；与 v0 动作面（冒号式 [`ACTIONS`]）**不是**同一套命名——
+/// 本常量只登记方法名集合，**不**声明任何映射关系。
+///
+/// **为什么需要它**：网关侧 `crates/agent-gateway/src/acp.rs::forward_action`
+/// 把动作名**原样**当 ACP method 投；`docs/contracts/acp-host.md` §7 决策项 2
+/// 要求「其余动作的 `域:动作` → ACP method 对应关系」先有台账。本常量是该台账
+/// （`docs/contracts/acp-method-ledger.md`）的对端清单锚点：
+/// `tests/method_ledger.rs` 用**源码文本扫描**从 `methods.rs` 抽字面量，断言其
+/// 集合与本常量**相等**——一侧加方法、另一侧漏登记即红。
+///
+/// 不要在这里删项：本常量是 ACP 方法面的单一冻结来源，删项会让上述相等断言
+/// 静默少跑一圈。
+pub const ACP_METHODS: &[&str] = &[
+    // agent-acp method::INITIALIZE
+    "initialize",
+    // agent-acp method::AUTHENTICATE
+    "authenticate",
+    // agent-acp method::SESSION_NEW
+    "session/new",
+    // agent-acp method::SESSION_LOAD
+    "session/load",
+    // agent-acp method::SESSION_RESUME
+    "session/resume",
+    // agent-acp method::SESSION_PROMPT
+    "session/prompt",
+    // agent-acp method::SESSION_CANCEL（通知）
+    "session/cancel",
+    // agent-acp method::SESSION_UPDATE（通知）
+    "session/update",
+    // agent-acp method::SESSION_SET_MODE
+    "session/set_mode",
+    // agent-acp method::SESSION_REQUEST_PERMISSION
+    "session/request_permission",
+    // agent-acp method::LOGOUT
+    "logout",
+    // agent-acp method::ELICITATION_CREATE
+    "elicitation/create",
+    // agent-acp method::ELICITATION_COMPLETE
+    "elicitation/complete",
+];
+
+/// 网关 ACP 转发白名单的**当前快照**（本卡：**快照**，**非不变量**）。
+///
+/// 真相来源：`crates/agent-gateway/src/rpc.rs::ACP_FORWARD_ACTIONS`，本卡取值
+/// `["sys:ping"]`（唯一成员，v0 动作**原名**，非自创名）。
+///
+/// ⚠️ **这是快照，不是不变量**：下一张卡正当扩充白名单时，本常量**要同步更新**；
+/// `tests/method_ledger.rs` **不得**据此锁死「白名单恰好几个成员」——那样会在
+/// 合法扩充时必红。本常量只用于守**关系不变量**：
+/// `ACP_FORWARD_WHITELIST_SNAPSHOT ⊆ ACTIONS`（防自创名）。
+///
+/// 本卡**不新增**白名单成员（见 `docs/contracts/acp-method-ledger.md` §5）。
+pub const ACP_FORWARD_WHITELIST_SNAPSHOT: &[&str] = &["sys:ping"];
+
 /// v0 全部事件 kind，共 11 项——与 `agent-core::schema::EventKind` **逐项对齐**。
 ///
 /// 真相来源：`agent-core` `schema.rs` 的 `enum EventKind`（10 个变体：
