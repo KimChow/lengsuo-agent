@@ -23,7 +23,7 @@ fn payload_for(action: &str) -> serde_json::Value {
         // 写入一个必然合法的配置键。
         "config:set" => json!({"key": "defaultMode", "value": "quick"}),
         // 缺 id → 网关参数错 400（**不可能是 404**，因为动作已注册）。
-        "session:get" | "session:stop" | "session:send" => json!({}),
+        "session:get" | "session:stop" | "session:send" | "session:cancel" => json!({}),
         // 缺 afterSeq → 网关显式 `bad()` 400；`session:replay` 已在 `run()` 注册。
         "session:replay" => json!({}),
         // 缺 approvalId → 网关参数错 400。
@@ -34,13 +34,18 @@ fn payload_for(action: &str) -> serde_json::Value {
     }
 }
 
-/// 常量本身必须与 `AGENT-KICKOFF.md` 第 24 行列的 11 个动作**逐个**对上。
+/// 常量必须与「`AGENT-KICKOFF.md` 第 24 行冻结的 11 个动作 + 台账登记的追加项」
+/// **逐个**对上。
 ///
 /// 这条挡住「常量被删项」：删掉 `ACTIONS` 里的某项会让上面的循环少跑一圈、
-/// 悄无声息地漏测。计数与集合都写死在这里，任何增删都要同时改测试。
+/// 悄无声息地漏测。冻结项与追加项都写死在这里，任何增删都要同时改测试。
+/// 刻意**不**写 `assert_eq!(ACTIONS.len(), N)`：数量锁会让每次正当扩充必红，
+/// 下面正反两向的集合比对已同时挡住删项与私增项。
 #[test]
-fn frozen_action_list_matches_kickoff_line_24() {
-    let expected = [
+fn frozen_action_list_matches_kickoff_and_ledger() {
+    // `AGENT-KICKOFF.md` 第 24 行冻结的 11 个（`session:replay` 为
+    // 2026-10-19「只增不改」追加，同见该行）。
+    let frozen_line_24 = [
         "session:list",
         "session:create",
         "session:get",
@@ -53,18 +58,26 @@ fn frozen_action_list_matches_kickoff_line_24() {
         "tool:list",
         "sys:ping",
     ];
-    assert_eq!(ACTIONS.len(), 11, "v0 动作面应为 11 个");
-    for name in expected {
+    // `08b9f40` 新增、经 `docs/contracts/acp-method-ledger.md` §1 补登记的追加项。
+    let ledger_appendix = ["session:cancel"];
+
+    for name in frozen_line_24 {
         assert!(
             ACTIONS.contains(&name),
             "`AGENT-KICKOFF.md` 第 24 行冻结的动作 {name} 不在 ACTIONS 里"
         );
     }
-    // 反向：常量里不得有 §2 未登记的动作。
+    for name in ledger_appendix {
+        assert!(
+            ACTIONS.contains(&name),
+            "台账登记的追加动作 {name} 不在 ACTIONS 里"
+        );
+    }
+    // 反向：常量里不得有既非第 24 行冻结、又非台账登记追加项的动作。
     for action in ACTIONS {
         assert!(
-            expected.contains(action),
-            "常量里的 {action} 未在 `AGENT-KICKOFF.md` 第 24 行登记"
+            frozen_line_24.contains(action) || ledger_appendix.contains(action),
+            "常量里的 {action} 既未在 `AGENT-KICKOFF.md` 第 24 行登记，也不是台账登记的追加项"
         );
     }
 }
@@ -137,4 +150,64 @@ async fn registered_action_surface_is_frozen() {
         );
     }
     g.shutdown().await.unwrap();
+}
+
+/// 从 `crates/agent-gateway/src/rpc.rs` 源码文本里抽出所有形如 `"域:动作"` 的
+/// 字符串字面量：**含且仅含一个冒号、冒号两侧均为 ASCII 标识符**。
+///
+/// 思路同 `tests/method_ledger.rs::scan_method_consts`：只读文件、手写字符
+/// 过滤，不新增依赖。这是**全文件**扫描——既覆盖 `run()` 的 `match action`
+/// 动作分支，也顺带覆盖 `ACP_FORWARD_ACTIONS` 白名单等处的动作名字面量（它们
+/// 同样必须是契约内的动作名）。payload 键名（`"sessionId"`、`"afterSeq"` 等）
+/// 不含冒号，天然被过滤掉。
+fn scan_action_literals(source: &str) -> Vec<String> {
+    fn is_ascii_ident(s: &str) -> bool {
+        let mut chars = s.chars();
+        matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+    let mut out = Vec::new();
+    let mut rest = source;
+    while let Some(start) = rest.find('"') {
+        let Some(end) = rest[start + 1..].find('"') else {
+            break;
+        };
+        let lit = &rest[start + 1..start + 1 + end];
+        if let Some((domain, action)) = lit.split_once(':') {
+            if !action.contains(':') && is_ascii_ident(domain) && is_ascii_ident(action) {
+                out.push(lit.to_owned());
+            }
+        }
+        rest = &rest[start + 1 + end + 1..];
+    }
+    out
+}
+
+/// 关系不变量（本卡的核心守点）：`rpc.rs` 实现里出现的 `"域:动作"` 字面量
+/// 集合 ⊆ [`ACTIONS`]。
+///
+/// 这条把「实现里有的动作 ⇒ 契约里必有」变成可执行断言，挡住「代码实现了、
+/// 契约漏登记」（如 `08b9f40` 新增的 `session:cancel` 先落在实现里、契约迟到）。
+/// 刻意**只守关系、不锁数量**——数量口径归 `method_ledger.rs`；正当扩充动作面
+/// 时，先把新动作登记进 `ACTIONS` 与台账，本断言自然变绿。
+#[test]
+fn rpc_action_literals_are_subset_of_actions() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("agent-gateway")
+        .join("src")
+        .join("rpc.rs");
+    let source =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()));
+
+    let scanned_names = scan_action_literals(&source);
+    let scanned: std::collections::BTreeSet<&str> =
+        scanned_names.iter().map(String::as_str).collect();
+    let frozen: std::collections::BTreeSet<&str> = ACTIONS.iter().copied().collect();
+
+    let unregistered: Vec<&&str> = scanned.difference(&frozen).collect();
+    assert!(
+        unregistered.is_empty(),
+        "rpc.rs 实现了但 ACTIONS 未登记的动作（差集）{unregistered:?}——契约落后于实现，先补登记再合并"
+    );
 }

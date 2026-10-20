@@ -8,12 +8,14 @@
 //! 真相来源：`AGENT-KICKOFF.md` §2（本地网关协议 v0 冻结版）。
 #![forbid(unsafe_code)]
 
-/// v0 全部动作名（`<域>:<动作>`），共 11 个。
+/// v0 全部动作名（`<域>:<动作>`），共 12 个（11 个冻结 + 1 个追加）。
 ///
-/// 逐项对应 `AGENT-KICKOFF.md` 第 24 行「v0 动作面」的冻结清单：
+/// 前 11 项逐项对应 `AGENT-KICKOFF.md` 第 24 行「v0 动作面」的冻结清单：
 /// `session:list/create/get/send/stop/replay`、`approval:respond`、
 /// `config:get/set`、`tool:list`、`sys:ping`
 /// （`session:replay` 为 2026-10-19「只增不改」追加，同见该行）。
+/// 第 12 项 `session:cancel` **不在**第 24 行内，是 `08b9f40` 新增、经
+/// `docs/contracts/acp-method-ledger.md` §1 补登记的追加项。
 pub const ACTIONS: &[&str] = &[
     // 行 24：session:list（会话列表）
     "session:list",
@@ -25,6 +27,9 @@ pub const ACTIONS: &[&str] = &[
     "session:send",
     // 行 24：session:stop（停止会话）
     "session:stop",
+    // 08b9f40 新增（非行 24 冻结项；台账 docs/contracts/acp-method-ledger.md §1）：
+    // session:cancel（取消当前回合，fire-and-forget，立即回快照）
+    "session:cancel",
     // 行 24：session:replay（事件回放；payload {id, afterSeq, limit?}）
     "session:replay",
     // 行 24：approval:respond（审批应答）
