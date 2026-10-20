@@ -11,6 +11,9 @@
 //!   一律映射为类型化错误 [`error::Error::JsonRpc`]。
 //! - 超时：每请求可配超时（默认 30s）；超时后连接标记 poisoned，后续请求
 //!   直接 fail-closed，需重建客户端。
+//! - 配置加载：[`load_from`] / [`merge_into`] 读写 `<data_root>/mcp.json`
+//!   （**无点前缀**，Claude Desktop 同款 `{"mcpServers": {...}}`），带三条
+//!   强校验；合并先读现有文件再并入，不丢其他 server。仅覆盖 stdio。
 //!
 //! 授权原语 [`trust::TrustGate`] 已由受控门面 [`trusted_client::TrustedClient`]
 //! 接上 [`client::McpClient`]（connect 前过门、call_tool 前查 `can_call`）；
@@ -32,9 +35,12 @@ mod transport;
 pub mod trust;
 pub mod trusted_client;
 
-pub use client::{ClientConfig, McpClient, NotificationReceiver};
+pub use client::{
+    default_config_path, load_from, merge_into, ClientConfig, McpClient, McpJson,
+    NotificationReceiver,
+};
 pub use codec::Framing;
-pub use error::Error;
+pub use error::{Error, McpConfigError};
 pub use protocol::{
     ContentBlock, Implementation, InitializeParams, InitializeResult, JsonRpcErrorObject,
     JsonRpcNotification, ProgressParams, RequestId, Result as ProtocolResult, ServerCapabilities,

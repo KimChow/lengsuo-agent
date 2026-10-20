@@ -2,6 +2,8 @@
 //! 匹配字符串；错误文本只携带长度、方法名与错误码等元数据，不输出工具
 //! 结果内容（工具结果可能含用户数据）。
 
+use std::path::PathBuf;
+
 /// 协议版本协商失败：本地支持列表与对端提议无交集。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("协议版本协商失败：对端返回 {server_offered}，本地支持 {local_supported:?}")]
@@ -65,6 +67,52 @@ pub enum Error {
     /// 参数或配置非法（例如空协议版本列表、id 取尽）。
     #[error("参数或配置非法：{reason}")]
     InvalidConfig { reason: String },
+}
+
+/// `mcp.json` 加载/合并错误。
+///
+/// 与 [`Error`] 分开：配置文件问题不是协议或连接问题，调用方不需要先建立
+/// 会话；两条错误链各自 fail-closed，不互相吞并。
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum McpConfigError {
+    /// 读取或写入配置文件失败（含文件不存在、权限、UTF-8 非法）。
+    #[error("MCP 配置读写失败（{path}）：{reason}")]
+    Io {
+        /// 出错的配置文件路径。
+        path: PathBuf,
+        /// 底层 I/O 错误的文本表示。
+        reason: String,
+    },
+
+    /// 文件内容不是合法 JSON。**不**降级为空配置。
+    #[error("MCP 配置不是合法 JSON（{path}）：{reason}")]
+    InvalidJson {
+        /// 出错的配置文件路径。
+        path: PathBuf,
+        /// `serde_json` 给出的解析错误。
+        reason: String,
+    },
+
+    /// JSON 顶层不是对象，因此不可能包含 `mcpServers` 对象。
+    #[error("MCP 配置顶层必须是对象")]
+    RootNotObject,
+
+    /// `mcpServers` 存在但不是 JSON 对象（数组、字符串、null 等）。
+    #[error("mcpServers 必须是对象")]
+    McpServersNotObject,
+
+    /// server 名称为空字符串或全空白。
+    #[error("server 名称不能为空")]
+    EmptyServerName,
+
+    /// 单个 server 条目无法转换为 stdio 命令（缺 `command`、字段类型错误等）。
+    #[error("server `{name}` 配置非法：{reason}")]
+    InvalidServer {
+        /// 出错的 server 名称。
+        name: String,
+        /// 具体原因。
+        reason: String,
+    },
 }
 
 impl Error {

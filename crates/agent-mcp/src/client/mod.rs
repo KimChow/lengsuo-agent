@@ -19,12 +19,15 @@
 mod command;
 mod config;
 mod connection;
+mod loader;
 mod notification;
 mod request;
 mod status;
 mod tools;
 
+pub use crate::error::McpConfigError;
 pub use command::StdioServerCommand;
 pub use config::{ClientConfig, DEFAULT_HANDSHAKE_TIMEOUT};
 pub use connection::McpClient;
+pub use loader::{default_config_path, load_from, merge_into, McpJson};
 pub use notification::NotificationReceiver;
