@@ -1,8 +1,8 @@
-//! `exec` 工具执行体（[`agent_core::ExecToolExecutor`]）桥接测试。
+//! `shell.exec` 工具执行体（[`agent_core::ExecToolExecutor`]）桥接测试。
 //!
 //! 覆盖三件事：
-//! 1. **参数形状**：缺失 / 空数组 / 非字符串 / `cwd` 非字符串一律 `Err`，且不得触达执行链；
-//! 2. **工具名**：非 `exec` 一律 `Err`，不得静默成功；
+//! 1. **参数形状**：缺失 / 空串 / 非字符串 / `cwd` 非字符串一律 `Err`，且不得触达执行链；
+//! 2. **工具名**：非 `shell.exec` 一律 `Err`，不得静默成功；
 //! 3. **判定 → 执行语义**：deny / 无规则 → `Err` 且无副作用；allow → 真实执行；
 //!    超时 → `Ok` 且 `timed_out`；输出非法 UTF-8 不 panic。
 //!
@@ -69,34 +69,35 @@ fn assert_rejected_without_execution(exec: &ExecToolExecutor, args: Value) {
     assert!(!marker.exists(), "坏参数不得触达执行链");
 }
 
-/// 1a. 缺少 `argv` 键。
+/// 1a. 缺少 `command` 键。
 #[test]
-fn missing_argv_is_rejected_without_executing() {
+fn missing_command_is_rejected_without_executing() {
     let exec = executor(policy_with(&[(&["touch"], Decision::Allow)]));
     assert_rejected_without_execution(&exec, json!({}));
 }
 
-/// 1b. `argv` 为空数组。
+/// 1b. `command` 为空串或纯空白（分词后空 argv）。
 #[test]
-fn empty_argv_is_rejected_without_executing() {
+fn empty_command_is_rejected_without_executing() {
     let exec = executor(policy_with(&[(&["touch"], Decision::Allow)]));
-    assert_rejected_without_execution(&exec, json!({ "argv": [] }));
+    assert_rejected_without_execution(&exec, json!({ "command": "" }));
+    assert_rejected_without_execution(&exec, json!({ "command": "   " }));
 }
 
-/// 1c. `argv` 含非字符串元素。
+/// 1c. `command` 含未闭合引号（分词失败）。
 #[test]
-fn non_string_argv_element_is_rejected_without_executing() {
+fn unterminated_quote_is_rejected_without_executing() {
     let exec = executor(policy_with(&[(&["echo"], Decision::Allow)]));
-    assert_rejected_without_execution(&exec, json!({ "argv": ["echo", 1] }));
+    assert_rejected_without_execution(&exec, json!({ "command": "echo 'hi" }));
 }
 
-/// 1d. `argv` 不是数组 / `cwd` 不是字符串。
+/// 1d. `command` 不是字符串 / `cwd` 不是字符串 / 顶层不是对象。
 #[test]
 fn malformed_shapes_are_rejected() {
     let exec = executor(policy_with(&[(&["echo"], Decision::Allow)]));
 
-    assert_rejected_without_execution(&exec, json!({ "argv": "echo hi" }));
-    assert_rejected_without_execution(&exec, json!({ "argv": ["echo", "hi"], "cwd": 5 }));
+    assert_rejected_without_execution(&exec, json!({ "command": ["echo", "hi"] }));
+    assert_rejected_without_execution(&exec, json!({ "command": "echo hi", "cwd": 5 }));
     assert_rejected_without_execution(&exec, json!(["echo", "hi"]));
 }
 
@@ -105,9 +106,9 @@ fn malformed_shapes_are_rejected() {
 fn other_tool_name_is_rejected() {
     let exec = executor(policy_with(&[(&["echo"], Decision::Allow)]));
 
-    let result = exec.execute("read_file", &json!({ "argv": ["echo", "hi"] }));
+    let result = exec.execute("read_file", &json!({ "command": "echo hi" }));
 
-    assert!(result.is_err(), "非 exec 工具必须 Err: {result:?}");
+    assert!(result.is_err(), "非 shell.exec 工具必须 Err: {result:?}");
 }
 
 /// 3. allow + `Forbid` ⇒ 真实执行并捕获 stdout。
@@ -121,7 +122,7 @@ fn allow_rule_runs_and_captures_stdout() {
     let exec = executor(policy_with(&[(&["echo", "bridge-ok"], Decision::Allow)]));
 
     let result = exec
-        .execute(EXEC_TOOL_NAME, &json!({ "argv": ["echo", "bridge-ok"] }))
+        .execute(EXEC_TOOL_NAME, &json!({ "command": "echo bridge-ok" }))
         .expect("allow 必须真实执行");
 
     let stdout = result["stdout"].as_str().expect("stdout 必须是字符串");
@@ -139,17 +140,14 @@ fn allow_rule_runs_and_captures_stdout() {
 #[test]
 fn deny_rule_returns_err_without_executing() {
     let exec = executor(policy_with(&[(&["touch"], Decision::Deny)]));
-    assert_rejected_without_execution(
-        &exec,
-        json!({ "argv": ["touch", "/tmp/w3d-bridge-denied"] }),
-    );
+    assert_rejected_without_execution(&exec, json!({ "command": "touch /tmp/w3d-bridge-denied" }));
 }
 
 /// 5. 无限制 + 无匹配规则（→ Ask / NeedsApproval）⇒ `Err` 且未执行。
 #[test]
 fn unmatched_rule_returns_err_without_executing() {
     let exec = executor(policy_with(&[(&["git", "status"], Decision::Allow)]));
-    assert_rejected_without_execution(&exec, json!({ "argv": ["touch", "/tmp/w3d-bridge-ask"] }));
+    assert_rejected_without_execution(&exec, json!({ "command": "touch /tmp/w3d-bridge-ask" }));
 }
 
 /// 6. 输出含非法 UTF-8 字节 ⇒ 不 panic，lossy 转成字符串。
@@ -160,9 +158,9 @@ fn invalid_utf8_output_does_not_panic() {
         return;
     }
 
-    // `\xff` 是合法 UTF-8 序列中不会出现的字节。
+    // `\xff` 是合法 UTF-8 序列中不会出现的字节；用单引号保证 shell 分词不吞反斜杠。
     let exec = executor(policy_with(&[(&["printf"], Decision::Allow)]));
-    let result = exec.execute(EXEC_TOOL_NAME, &json!({ "argv": ["printf", "\\xff"] }));
+    let result = exec.execute(EXEC_TOOL_NAME, &json!({ "command": "printf '\\xff'" }));
 
     let result = result.expect("printf 必须执行成功");
     let stdout = result["stdout"].as_str().expect("stdout 必须是字符串");
@@ -193,7 +191,7 @@ fn timeout_is_reported_as_timed_out() {
 
     let started = std::time::Instant::now();
     let result = exec
-        .execute(EXEC_TOOL_NAME, &json!({ "argv": ["sleep", "5"] }))
+        .execute(EXEC_TOOL_NAME, &json!({ "command": "sleep 5" }))
         .expect("超时应作为结果返回而非错误");
     let elapsed = started.elapsed();
 
