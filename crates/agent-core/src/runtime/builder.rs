@@ -13,6 +13,7 @@ pub struct RuntimeBuilder {
     config: Option<RuntimeConfig>,
     task_board: Option<TaskBoard>,
     tool_executor: Option<Arc<dyn ToolExecutor + Send + Sync>>,
+    host_services: HostServices,
 }
 
 impl RuntimeBuilder {
@@ -55,6 +56,16 @@ impl RuntimeBuilder {
         self
     }
 
+    /// 注入宿主能力服务（技能目录 / MCP 客户端 / MCP 调用端口 / 凭据解析）。
+    ///
+    /// 不注入（默认 [`HostServices::default`]，各字段为 `None`）时各域能力全部
+    /// 缺省，工具步零回归——`mcp:` 前缀工具走既有执行器路径。
+    #[must_use]
+    pub fn host_services(mut self, services: HostServices) -> Self {
+        self.host_services = services;
+        self
+    }
+
     /// 组装：事件日志与 blob 目录建在 workdir 下；启动回放恢复 seq、会话索引
     /// 与任务看板（未注入看板时由 `task.` 前缀事件重建）。
     pub fn build(self) -> Result<Runtime, CoreError> {
@@ -68,7 +79,7 @@ impl RuntimeBuilder {
         let log: Arc<dyn EventLog> = Arc::new(JsonlEventLog::open(workdir.join("events"))?);
         let gate = self
             .gate
-            .unwrap_or_else(|| PermissionGate::new(ToolRegistry::new()));
+            .unwrap_or_else(|| PermissionGate::new(crate::tool::default_registry()));
         let provider = self
             .provider
             .ok_or_else(|| CoreError::InvalidConfig("Runtime 必须注入 provider".into()))?;
@@ -122,6 +133,7 @@ impl RuntimeBuilder {
             )),
             tasks,
             executor: Arc::new(Mutex::new(self.tool_executor)),
+            host: self.host_services,
         })
     }
 }
