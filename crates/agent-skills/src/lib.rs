@@ -65,6 +65,7 @@ pub mod error;
 pub mod parse;
 pub mod policy;
 pub mod registry;
+pub mod roots;
 pub mod skill;
 
 pub use catalog::{LoadedSkill, SkillCatalog, SkillSummary};
@@ -72,4 +73,5 @@ pub use error::{AccessError, SkillsError};
 pub use parse::{parse_skill_md, parse_skill_with_policy, MAX_SKILL_BYTES, SKILL_FILE};
 pub use policy::{InvocationSource, SkillPolicy};
 pub use registry::SkillRegistry;
+pub use roots::{SkillRoots, PROJECT_DIR_ENV, USER_DIR_ENV};
 pub use skill::Skill;
