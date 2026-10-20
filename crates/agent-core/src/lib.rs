@@ -10,13 +10,14 @@ pub mod config;
 pub mod error;
 pub mod event_log;
 pub mod executor;
+pub mod host;
 #[allow(clippy::module_inception)]
 pub mod r#loop;
 pub mod mode;
 pub mod permission;
 pub mod provider;
 pub mod redact;
-pub mod run_status; // 本卡（h1-run-status-schema）仅声明模块；`pub use` 由 h1-host-services 统一补
+pub mod run_status; // 模块由 h1-run-status-schema 声明；`pub use` 由 h1-host-services 统一收口
 pub mod runtime;
 pub mod schema;
 pub mod sensitive;
@@ -26,6 +27,7 @@ pub mod workspace_read;
 pub use error::CoreError;
 pub use event_log::{EventLog, JsonlEventLog};
 pub use executor::{ExecToolExecutor, EXEC_TOOL_NAME};
+pub use host::{CredentialResolver, HostServices, McpToolDispatcher, NoopCredentialResolver};
 pub use mode::{mode_policy, ModePolicy};
 pub use permission::{Decision, PermissionGate};
 pub use provider::{Provider, ProviderStep, TurnContext};
@@ -34,6 +36,10 @@ pub use r#loop::{
     ToolExecutor, DEFAULT_MAX_STEPS,
 };
 pub use redact::Redactor;
+pub use run_status::{
+    recover, DisplayStatus, ExecutionStage, Recovery, RunEvent, RunState, RunStatus,
+    TerminalOutcome, STALE_THRESHOLD_MS, TERMINATED_REASON,
+};
 pub use runtime::{CreateSession, Runtime, RuntimeBuilder, TurnReceipt};
 pub use schema::{Event, Isolation, Message, Mode, PermissionMode, Role, Session, SCHEMA_VERSION};
-pub use tool::{ToolRegistry, ToolSpec};
+pub use tool::{default_registry, ToolKind, ToolRegistry, ToolSpec};

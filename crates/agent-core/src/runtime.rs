@@ -22,12 +22,12 @@ use crate::bus::EventHub;
 use crate::config::RuntimeConfig;
 use crate::error::CoreError;
 use crate::event_log::{EventLog, JsonlEventLog};
+use crate::host::HostServices;
 use crate::permission::PermissionGate;
 use crate::provider::{Provider, TurnContext};
 use crate::r#loop::ToolExecutor;
 use crate::redact::Redactor;
 use crate::schema::{Event, Isolation, Message, Mode, PermissionMode, Session, SessionStatus};
-use crate::tool::ToolRegistry;
 
 /// `content` 里保留的最大字符数（大结果走 `result_ref`）。
 pub const CONTENT_PREVIEW_CHARS: usize = 400;
@@ -97,6 +97,12 @@ pub struct Runtime {
     /// 不新增第二条注入路径（装配仍只有 `RuntimeBuilder::tool_executor` 与
     /// [`Runtime::set_tool_executor`] 两个入口，后者是前者的运行期对应物）。
     executor: Arc<Mutex<Option<Arc<dyn ToolExecutor + Send + Sync>>>>,
+    /// 宿主能力服务（技能目录 / MCP 客户端 / MCP 调用端口 / 凭据解析，C1 组装口）。
+    ///
+    /// 构造期注入（[`RuntimeBuilder::host_services`]），运行期只读：本卡不提供
+    /// 热替换面（技能/凭据的接线在 C5/C6，届时按需另开注入路径）。未注入（默认）
+    /// 时各域能力全部缺省，既有行为逐字节不变。
+    host: HostServices,
 }
 
 impl Runtime {
@@ -112,6 +118,11 @@ impl Runtime {
     /// 权限门（网关 `tool:list` / 审批 RPC 用）。
     pub fn gate(&self) -> &PermissionGate {
         &self.gate
+    }
+
+    /// 宿主能力服务（C1 组装口；工具步的 MCP 路由与后续卡的能力面都从这里取）。
+    pub fn host_services(&self) -> &HostServices {
+        &self.host
     }
 
     /// 事件日志（网关回放 RPC 用）。
