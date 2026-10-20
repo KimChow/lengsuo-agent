@@ -7,6 +7,7 @@ authors.workspace = true
 description = "专家包：manifest 数据结构、校验器与发现注册表（专家体系的实体层）"
 
 [dependencies]
+agent-skills = { path = "../agent-skills" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
