@@ -32,6 +32,8 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod export;
+pub mod init;
 pub mod manifest;
 pub mod paths;
 pub mod registry;
@@ -41,6 +43,8 @@ pub mod validate;
 pub mod validate_errors;
 
 pub use error::{ExpertError, Severity};
+pub use export::{export_expert, ExportSummary};
+pub use init::{init_expert, ExpertDraft, ExpertSummary};
 pub use manifest::{
     Author, CategoryId, Dependencies, ExpertManifest, ExpertMember, ExpertType, LocalizedText,
     MemberRole, PromptPair, TeamInfo,
@@ -50,8 +54,8 @@ pub use paths::{
     PROJECT_EXPERTS_DIR, REGISTRY_FILE, SKILLS_DIR, USER_EXPERTS_DIR,
 };
 pub use registry::{
-    ExpertOrigin, ExpertPackage, ExpertRegistry, ExpertRoot, ExpertScope, OverrideRecord,
-    RegistryEntry, RegistryFile, ShadowedExpert,
+    register_expert, unregister_expert, ExpertOrigin, ExpertPackage, ExpertRegistry, ExpertRoot,
+    ExpertScope, OverrideRecord, RegistryEntry, RegistryFile, ShadowedExpert,
 };
 pub use skills::{
     catalog_roots, mount_expert_skills, mounted_name, resolve_mounted, visible_skills,
