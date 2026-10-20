@@ -1,0 +1,122 @@
+//! 30 段表第 1–10 项（07 §3.1 原文顺序）。
+//!
+//! 行类型在 `support.rs`，三份分段表在 `table_rows` 里拼成完整 30 行。
+
+#![allow(dead_code)]
+
+use agent_prompts::PromptMode;
+
+use super::support::{Form, Row, Verdict, ALL, CRAFT_FAMILY, NO_LOOP};
+
+pub(super) const ROWS_1_TO_10: [Row; 10] = [
+    Row {
+        number: 1,
+        tag: "user_query",
+        summary: "本轮用户输入",
+        verdict: Verdict::NotDone,
+        form: Form::Omitted,
+        source: "07 §3.1 第 1 项",
+        modes: &[],
+        absent_in: ALL,
+        not_done: "用户输入属消息流层，由会话消息承载；系统提示词不复制用户输入。重新考虑：若运行时要求把输入摘要注入系统提示词。",
+    },
+    Row {
+        number: 2,
+        tag: "content_policy",
+        summary: "合规底线（七条永不绕过）",
+        verdict: Verdict::Done,
+        form: Form::Section("## 内容政策"),
+        source: "18 §10.1；05 §7",
+        modes: ALL,
+        absent_in: &[],
+        not_done: "",
+    },
+    Row {
+        number: 3,
+        tag: "personal_files_safety",
+        summary: "个人目录八条（全部强制）",
+        verdict: Verdict::Done,
+        form: Form::Section("## 个人目录安全"),
+        source: "18 §10.2",
+        modes: ALL,
+        absent_in: &[],
+        not_done: "",
+    },
+    Row {
+        number: 4,
+        tag: "windows_command_safety",
+        summary: "Windows 命令五条",
+        verdict: Verdict::DeferredDone,
+        form: Form::Conditional("## Windows 命令安全"),
+        source: "18 §10.3；07 §5 条件段",
+        modes: ALL,
+        absent_in: &[], // 无条件排除：出现与否只看 `is_windows`
+        not_done: "",
+    },
+    Row {
+        number: 5,
+        tag: "regional_conventions",
+        summary: "区域惯例（涨红跌绿 / ¥）",
+        verdict: Verdict::Done,
+        form: Form::Section("## 区域惯例"),
+        source: "18 §10.4",
+        modes: ALL,
+        absent_in: &[],
+        not_done: "",
+    },
+    Row {
+        number: 6,
+        tag: "working_modes",
+        summary: "五模式分工与切换",
+        verdict: Verdict::Done,
+        form: Form::Section("## 工作模式"),
+        source: "05 §2",
+        modes: ALL,
+        absent_in: &[],
+        not_done: "",
+    },
+    Row {
+        number: 7,
+        tag: "agent_loop",
+        summary: "智能体循环 8 步（不含文件传输步）",
+        verdict: Verdict::Done,
+        form: Form::Section("## 智能体循环"),
+        source: "18 §4（九步去掉第 8 步）；21 §3；05 §3",
+        modes: CRAFT_FAMILY,
+        absent_in: NO_LOOP,
+        not_done: "",
+    },
+    Row {
+        number: 8,
+        tag: "result_presentation",
+        summary: "结果呈现六条（craft 版 / ask 版）",
+        verdict: Verdict::Done,
+        form: Form::Section("## 结果呈现"),
+        source: "18 §6；05 §2",
+        modes: ALL,
+        absent_in: &[],
+        not_done: "",
+    },
+    Row {
+        number: 9,
+        tag: "sharing_files",
+        summary: "文件分享风格规则",
+        verdict: Verdict::Done,
+        form: Form::Section("## 文件分享"),
+        source: "18 §6",
+        modes: &[PromptMode::Ask, PromptMode::Plan, PromptMode::Craft, PromptMode::Expert],
+        absent_in: &[PromptMode::Quick],
+        not_done: "",
+    },
+    Row {
+        number: 10,
+        tag: "final_answer_instructions",
+        summary: "最终答复独立成立、≤50–70 行",
+        verdict: Verdict::Done,
+        form: Form::Section("## 最终答复要求"),
+        source: "18 §6",
+        modes: &[PromptMode::Ask, PromptMode::Plan, PromptMode::Craft, PromptMode::Expert],
+        absent_in: &[PromptMode::Quick],
+        not_done: "",
+    },
+];
