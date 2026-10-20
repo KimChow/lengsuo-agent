@@ -37,7 +37,7 @@ use crate::model::{Cond, PromptMode, Segment};
 /// 段序 = 07 §3.1 的第 2–6 项：内容政策 → 个人目录安全 → Windows 命令安全
 /// （`is_windows` 条件段）→ 区域惯例 → 工作模式。
 pub(super) fn public_layer() -> Vec<Segment> {
-    vec![
+    let mut segments = vec![
         // 07 §3.1 第 2 项 <content_policy>：18 §10.1 七条。
         text(policy::CONTENT_POLICY),
         // 07 §3.1 第 3 项 <personal_files_safety>：18 §10.2 八条（ALL mandatory）。
@@ -51,7 +51,25 @@ pub(super) fn public_layer() -> Vec<Segment> {
         text(policy::REGIONAL_CONVENTIONS),
         // 07 §3.1 第 6 项 <working_modes>：05 §2 模式矩阵。
         text(modes::WORKING_MODES),
-    ]
+    ];
+    // 18 §13 组装位 <tone_and_style>（风格层）：空值整段省略。
+    // 段序重排归组装顺序卡；本卡只保证「在场且在公共层」。
+    segments.extend(tone_style_segment());
+    segments
+}
+
+/// `<tone_and_style>` 条件段：`tone_style` 非空才渲染。
+///
+/// 值由宿主填入（`ToneStyle::content()` 或自定义风格文本）；本段只负责
+/// 标签包裹与正交性声明。用单段占位符而非独立 [`Segment::Var`]：段间以空行
+/// 分隔，拆成多段会把标签、正文与尾标签撑开。
+pub(crate) fn tone_style_segment() -> Option<Segment> {
+    let block = format!(
+        "{}{{{{tone_style}}}}\n{}",
+        crate::style::TONE_AND_STYLE_HEADER,
+        crate::style::TONE_AND_STYLE_FOOTER
+    );
+    Some(if_filled(&["tone_style"], vec![owned(block)]))
 }
 
 /// 行为层（【出处：07 §3.3】模式行为片段 C 组）。
