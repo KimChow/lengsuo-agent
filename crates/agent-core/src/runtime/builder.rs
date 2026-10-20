@@ -94,6 +94,8 @@ impl RuntimeBuilder {
                 id,
                 HotSession {
                     drain: Arc::new(Mutex::new(())),
+                    // 回放出来的会话同样从「未取消」起步（与新建会话一致）。
+                    cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     session: Session {
                         memory_digest: None,
                         id,
