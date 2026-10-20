@@ -10,7 +10,10 @@ use crate::error::CoreError;
 use crate::run_status::RunEvent;
 use crate::schema::{Isolation, Mode, PermissionMode, Session, SessionStatus};
 
-use super::{now_ms, preview, CreateSession, HotSession, Runtime};
+use super::{now_ms, CreateSession, HotSession, Runtime};
+
+// 四段取值的落点（h3-memory-inject-4seg 卡）：`context.rs` 据此接线 `prompt_vars()`。
+pub(super) mod memory_vars;
 
 impl Runtime {
     /// 创建会话（写 `session_update` 事件）。
@@ -39,7 +42,7 @@ impl Runtime {
         if let Some(env) = &session.env_binding {
             session.isolation.env_id = Some(env.clone());
         }
-        // 三层记忆注入（agent-memory-spec §4）：增强项，失败不阻断建会话。
+        // 记忆注入（agent-memory-spec §4）：增强项，失败不阻断建会话。
         if self.config.lock().expect("配置锁不得毒化").memory_enabled {
             match self.compose_memory_digest(&session.workspace_root) {
                 Ok(digest) => session.memory_digest = Some(digest),
@@ -70,34 +73,14 @@ impl Runtime {
         Ok(session)
     }
 
-    /// 组装记忆摘要（身份恒有；各层前 200 字符预览；总 ≤8000 字符）。
+    /// 组装记忆摘要（会话快照面：单段文本，各层前 200 字符预览；总 ≤8000 字符）。
+    ///
+    /// 注入面（system prompt）走**四段**（见 [`memory_vars::MemorySegments`]）；
+    /// 本方法只服务会话快照 `Session.memory_digest`（网关 `session:get` 的展示面），
+    /// 格式与本卡之前逐字一致。
     pub(super) fn compose_memory_digest(&self, workspace_root: &str) -> Result<String, CoreError> {
-        use agent_memory::{MemoryEngine, MemoryPaths};
-        let engine = MemoryEngine::new(
-            MemoryPaths::new(self.workdir.join(".lengsuo"), workspace_root),
-            true,
-        );
-        let bundle = engine
-            .compose()
-            .map_err(|e| CoreError::InvalidConfig(format!("记忆组装失败: {e}")))?;
-        let mut out = String::new();
-        out.push_str(&format!(
-            "[身份] AI={} 用户={}\n",
-            bundle.identity.ai_name, bundle.identity.user_name
-        ));
-        if !bundle.identity.soul.is_empty() {
-            out.push_str(&format!("[人格] {}\n", preview(&bundle.identity.soul, 200)));
-        }
-        if let Some(m) = &bundle.user_memory {
-            out.push_str(&format!("[用户记忆] {}\n", preview(m, 200)));
-        }
-        if let Some(m) = &bundle.project_memory {
-            out.push_str(&format!("[项目记忆] {}\n", preview(m, 200)));
-        }
-        if let Some(t) = &bundle.daily_tail {
-            out.push_str(&format!("[当日日志尾] {}\n", preview(t, 200)));
-        }
-        Ok(preview(&self.redact(&out), 8000))
+        let layers = self.collect_memory_layers(workspace_root)?;
+        Ok(self.compose_digest_text(&layers))
     }
 
     /// 记忆工具执行入口（权限门放行后由宿主调用；每次成功发 memory_update 事件）。

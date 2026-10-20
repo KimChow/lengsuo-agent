@@ -3,7 +3,8 @@
 //! Runtime 发起回合时不再只把用户输入送给 Provider，而是构造 [`TurnContext`]：
 //! - `system_prompt`：`agent_prompts::Composer::build(模式, 变量)`，变量含身份层
 //!   （AI 名/用户称呼/人格，agent-memory 身份层不受跨会话记忆开关限制）、工作区、
-//!   确定性日期文本、以及**已启用**时的记忆摘要；
+//!   确定性日期文本、以及**已启用**时的**记忆四段**（身份/用户记忆/项目记忆/当日日志，
+//!   h3-memory-inject-4seg 卡；空段整段省略）；
 //! - `history`：会话已有消息（时间序），本轮输入在其后单独作为 `user_text`；
 //!   进上下文先过**压缩路径**（[crate::runtime::compaction]：历史只从最近一次
 //!   completed 压缩开始读，老段由摘要承载），**压缩不可用时**降级到兜底裁剪
@@ -14,8 +15,8 @@
 //!
 //! 隐私（AGENTS §6）：进入上下文的任何文本先过脱敏器；凭据不进模型输入。
 //!
-//! 记忆新鲜度：开启记忆的每个回合都重新组装摘要，不信任建会话时的 `session`
-//! 快照（见 [`Runtime::turn_memory_digest`]），否则本会话内的显式记忆写入永不生效。
+//! 记忆新鲜度：开启记忆的每个回合都重新组装，不信任建会话时的 `session`
+//! 快照（见 [`Runtime::turn_memory`]），否则本会话内的显式记忆写入永不生效。
 
 use std::ops::Range;
 
@@ -25,6 +26,7 @@ use agent_prompts::{Composer, PromptMode, PromptVars};
 use serde_json::json;
 
 use super::compaction;
+use super::sessions::memory_vars::TurnMemory;
 
 /// 历史消息进上下文前的字符上限（防单条大输出顶爆模型输入；大结果走 result_ref）。
 const HISTORY_MESSAGE_CHARS: usize = 2000;
@@ -42,14 +44,14 @@ impl Runtime {
         history: &[Message],
         user_text: &str,
     ) -> TurnContext {
-        let digest = self.turn_memory_digest(session);
-        let vars = self.prompt_vars(session, digest.as_deref());
+        let memory = self.turn_memory(session);
+        let vars = self.prompt_vars(session, &memory);
         let system_prompt = Composer::build(prompt_mode(session.mode), &vars);
         TurnContext {
             session_id: session.id,
             mode: session.mode,
             system_prompt,
-            memory_digest: digest,
+            memory_digest: (!memory.digest.is_empty()).then_some(memory.digest),
             history: self.compacted_history(history),
             user_text: self.redact(user_text),
         }
@@ -87,29 +89,32 @@ impl Runtime {
         }
     }
 
-    /// 本轮记忆摘要：仅在 `memory.enabled` 时给出（关闭 ⇒ `None`，Composer 不留空段）。
+    /// 本轮记忆产物：仅在 `memory.enabled` 时给出（关闭 ⇒ 四段皆空，Composer 不留空段）。
     ///
     /// 新鲜度（memory-freshness 卡）：**每次开启的回合都按现存 MemoryEngine 重组**，
     /// 不采用建会话时留在 `session.memory_digest` 上的快照——否则本会话内通过既有
     /// 记忆写工具（`memory.set_user` / `memory.set_project` / `memory.append_daily`）
     /// 做的显式更新永远进不了模型上下文。会话快照只作为建会话时刻的热态展示用。
     ///
-    /// 重组失败 ⇒ 本回合**不带任何摘要**（并落一条 `warning` 事件可告警），回合照常
+    /// 重组失败 ⇒ 本回合**不带任何记忆**（并落一条 `warning` 事件可告警），回合照常
     /// 跑完；尤其**不回退**到旧会话快照——失败时旧快照可能已过时且含敏感层内容，
     /// 宁可少注入也不注入陈旧记忆（AGENTS §6 最小上下文）。
-    fn turn_memory_digest(&self, session: &Session) -> Option<String> {
+    ///
+    /// 产物含两件：**四段**（注入面，system prompt）与**单段摘要**（展示面，
+    /// `TurnContext.memory_digest`）。二者**同源**（一次读盘），不会互相矛盾。
+    fn turn_memory(&self, session: &Session) -> TurnMemory {
         let enabled = self
             .config
             .lock()
             .map(|c| c.memory_enabled)
             .unwrap_or_default();
         if !enabled {
-            return None;
+            return TurnMemory::default();
         }
-        match self.compose_memory_digest(&session.workspace_root) {
-            Ok(digest) => Some(self.redact(&digest)),
+        match self.compose_turn_memory(&session.workspace_root) {
+            Ok(memory) => memory,
             Err(e) => {
-                // 告警本身失败不得改变回合结论（摘要已确定缺席）。
+                // 告警本身失败不得改变回合结论（记忆已确定缺席）。
                 let _ = self.emit(
                     session,
                     "warning",
@@ -118,18 +123,19 @@ impl Runtime {
                         "reason": e.to_string(),
                     }),
                 );
-                None
+                TurnMemory::default()
             }
         }
     }
 
-    /// 模板变量：身份层 + 工作区 + 日期 + 用户规则（v0 空）+ 已启用记忆摘要。
+    /// 模板变量：身份层 + 工作区 + 日期 + 用户规则（v0 空）+ 记忆四段。
     ///
-    /// **临时兼容（h1-prompt-vars）**：`PromptVars` 已扩容为 22 字段、记忆拆为四段，
-    /// 但本卡只做数据面。此处把现有单段摘要整体塞进 `memory_project`，其余记忆段留空；
-    /// 产品/身份/风格/专家人格/语言/平台/功能开关/工具呈现/产物目录等新变量暂给默认值
-    /// （字符串空、布尔 `false`）。**正式拆分与接线由 M3 / A7 卡完成**。
-    fn prompt_vars(&self, session: &Session, digest: Option<&str>) -> PromptVars {
+    /// 记忆四段（h3-memory-inject-4seg）：`memory_identity` / `memory_user` /
+    /// `memory_project` / `memory_daily` 各自独立成段，**空串 ⇒ 整段省略**
+    /// （`agent-prompts` 的 `slot()`，本卡不改）。产品/身份/风格/专家人格/语言/平台/
+    /// 功能开关/工具呈现/产物目录等新变量仍走 `PromptVars::default()`
+    /// （字符串空、布尔 `false`）——它们的接线属 A2/A3/A5/A7 卡。
+    fn prompt_vars(&self, session: &Session, memory: &TurnMemory) -> PromptVars {
         let identity = self.read_identity(&session.workspace_root);
         PromptVars {
             ai_name: self.redact(&identity.ai_name),
@@ -138,7 +144,10 @@ impl Runtime {
             workspace: self.redact(&session.workspace_root),
             date: date_text(),
             user_rules: String::new(),
-            memory_project: digest.unwrap_or_default().to_string(),
+            memory_identity: memory.segments.identity.clone(),
+            memory_user: memory.segments.user.clone(),
+            memory_project: memory.segments.project.clone(),
+            memory_daily: memory.segments.daily.clone(),
             ..PromptVars::default()
         }
     }
