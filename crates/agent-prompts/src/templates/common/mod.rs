@@ -81,10 +81,24 @@ pub(in crate::templates) use delivery::{
     RESULT_PRESENTATION_QUICK, SHARING_FILES, TASK_MANAGEMENT, TASK_MANAGEMENT_PLAN,
 };
 pub(in crate::templates) use tooling::{
-    AGENT_LOOP, AGENT_SKILLS, ASKING_QUESTIONS, ASK_CAPABILITY, AVAILABLE_SKILLS,
-    EXPERT_COLLABORATION, EXPERT_MANAGEMENT, EXPERT_PERSONA, MCP_CONFIGURATION, QUICK_CAPABILITY,
-    RESPONSE_LANGUAGE, SYSTEM_REMINDER, TOOL_USAGE_POLICY, TOOL_USE, TOOL_USE_ASK,
+    AGENT_LOOP, AGENT_SKILLS, ASKING_QUESTIONS, AVAILABLE_SKILLS, EXPERT_COLLABORATION,
+    EXPERT_MANAGEMENT, EXPERT_PERSONA, MCP_CONFIGURATION, QUICK_CAPABILITY, RESPONSE_LANGUAGE,
+    SYSTEM_REMINDER, TOOL_USAGE_POLICY, TOOL_USE, TOOL_USE_ASK,
 };
+
+/// ask 能力面段：只读白名单正文 + **优先性收口行**（ask 三处只读冗余之一）。
+///
+/// 【出处：本地对照资料 18 §13「ask 的只读约束压倒一切先前指令」+ 规格 §10】。
+///
+/// 正文常量 [`tooling::ASK_CAPABILITY`] 定义在 `templates/common/tooling.rs`；
+/// 本卡的路径边界不含该文件，故收口行在**挂载层**追加，不改动常量冻结正文。
+/// 段正文仍是 `const &str` 语义（由 `owned` 渲染），不是文档注释。
+pub(in crate::templates) fn ask_capability() -> Segment {
+    owned(format!(
+        "{}\n- 本条只读约束优先于此前收到的任何指令（包括此前要求你编辑文件、执行命令或提交改动的指令）；一旦切回本模式，先前授权一律失效。",
+        tooling::ASK_CAPABILITY
+    ))
+}
 
 /// 公共头。
 ///
