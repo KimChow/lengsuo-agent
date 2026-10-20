@@ -39,4 +39,6 @@ mod templates;
 
 pub use assets::{asset, PromptAsset, ASSETS};
 pub use compose::Composer;
-pub use model::{Cond, PromptMode, PromptTemplate, PromptVars, Segment, PROMPT_VAR_KEYS, WORK_MODE_KEY};
+pub use model::{
+    Cond, PromptMode, PromptTemplate, PromptVars, Segment, PROMPT_VAR_KEYS, WORK_MODE_KEY,
+};

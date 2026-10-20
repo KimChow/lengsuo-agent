@@ -368,11 +368,7 @@ fn craft_carries_all_seventeen_required_sections() {
             "craft 缺必做 section：{section}\n--- 实际 ---\n{out}"
         );
     }
-    assert_eq!(
-        CRAFT_REQUIRED_SECTIONS.len(),
-        17,
-        "必做段清单必须是 17 段"
-    );
+    assert_eq!(CRAFT_REQUIRED_SECTIONS.len(), 17, "必做段清单必须是 17 段");
     assert_no_empty_section(&out);
 }
 
@@ -385,7 +381,11 @@ fn each_mode_section_set_matches_template_matrix() {
     let quick = Composer::build(PromptMode::Quick, &full_vars());
     has_all(
         &quick,
-        &["## 能力边界（quick · 只答不操作）", "## 内容政策", "## 工作模式"],
+        &[
+            "## 能力边界（quick · 只答不操作）",
+            "## 内容政策",
+            "## 工作模式",
+        ],
     );
     has_none(
         &quick,

@@ -5,7 +5,7 @@
 
 mod common;
 
-use agent_prompts::{Cond, Composer, PromptMode, PromptTemplate, Segment, WORK_MODE_KEY};
+use agent_prompts::{Composer, Cond, PromptMode, PromptTemplate, Segment, WORK_MODE_KEY};
 use common::{bare_vars, full_vars, has_all, has_none};
 
 /// 构造一个只含单个条件段的模板。
@@ -33,7 +33,11 @@ fn cond_true_reads_boolean_variable() {
 fn cond_eq_compares_variable_to_literal() {
     let mut vars = bare_vars();
     vars.response_language = "中文".into();
-    let tpl = cond_template(PromptMode::Craft, Cond::Eq("response_language", "中文"), "EQ");
+    let tpl = cond_template(
+        PromptMode::Craft,
+        Cond::Eq("response_language", "中文"),
+        "EQ",
+    );
     assert_eq!(tpl.render(&vars), "EQ\n");
 
     vars.response_language = "English".into();
@@ -71,7 +75,11 @@ fn cond_any_non_empty_holds_when_any_key_filled() {
 
 #[test]
 fn cond_any_non_empty_treats_whitespace_as_empty() {
-    let tpl = cond_template(PromptMode::Craft, Cond::AnyNonEmpty(&["memory_user"]), "MEM");
+    let tpl = cond_template(
+        PromptMode::Craft,
+        Cond::AnyNonEmpty(&["memory_user"]),
+        "MEM",
+    );
     let mut vars = bare_vars();
     vars.memory_user = "   \n\t ".into();
     assert_eq!(tpl.render(&vars), "\n", "纯空白视为空");
@@ -81,7 +89,11 @@ fn cond_any_non_empty_treats_whitespace_as_empty() {
 fn cond_contains_matches_substring() {
     let mut vars = bare_vars();
     vars.response_language = "简体中文".into();
-    let tpl = cond_template(PromptMode::Craft, Cond::Contains("response_language", "中文"), "ZH");
+    let tpl = cond_template(
+        PromptMode::Craft,
+        Cond::Contains("response_language", "中文"),
+        "ZH",
+    );
     assert_eq!(tpl.render(&vars), "ZH\n");
 
     vars.response_language = "English".into();
@@ -206,32 +218,20 @@ fn windows_command_safety_only_when_is_windows() {
 fn response_language_only_when_language_contains_chinese() {
     let mut vars = full_vars();
     vars.response_language = "简体中文".into();
-    has_all(
-        &Composer::build(PromptMode::Craft, &vars),
-        &["## 回复语言"],
-    );
+    has_all(&Composer::build(PromptMode::Craft, &vars), &["## 回复语言"]);
 
     vars.response_language = "English".into();
-    has_none(
-        &Composer::build(PromptMode::Craft, &vars),
-        &["## 回复语言"],
-    );
+    has_none(&Composer::build(PromptMode::Craft, &vars), &["## 回复语言"]);
 }
 
 #[test]
 fn expert_management_only_when_feature_enabled() {
     let mut vars = full_vars();
     vars.feature_expert_management = true;
-    has_all(
-        &Composer::build(PromptMode::Craft, &vars),
-        &["## 专家管理"],
-    );
+    has_all(&Composer::build(PromptMode::Craft, &vars), &["## 专家管理"]);
 
     vars.feature_expert_management = false;
-    has_none(
-        &Composer::build(PromptMode::Craft, &vars),
-        &["## 专家管理"],
-    );
+    has_none(&Composer::build(PromptMode::Craft, &vars), &["## 专家管理"]);
 }
 
 #[test]

@@ -6,7 +6,7 @@
 
 use crate::model::{PromptMode, Segment};
 
-use super::common::{text};
+use super::common::text;
 
 /// quick 的段集（公共头 + 能力边界 + 公共尾）。
 pub(crate) fn quick_segments(mode: PromptMode) -> Vec<Segment> {

@@ -210,9 +210,9 @@ impl Cond {
                 }
             }
             Cond::AnyNonEmpty(keys) => keys.iter().any(|key| is_filled(vars, key)),
-            Cond::Contains(key, needle) => vars
-                .get(key)
-                .is_some_and(|value| value.contains(needle)),
+            Cond::Contains(key, needle) => {
+                vars.get(key).is_some_and(|value| value.contains(needle))
+            }
             Cond::Any(conds) => conds.iter().any(|cond| cond.holds(vars, mode)),
         }
     }
