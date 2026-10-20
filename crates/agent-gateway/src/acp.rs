@@ -10,6 +10,10 @@
 //! 「`域:动作` ↔ `session/*`」映射表（那套命名未冻结，见 [`crate::rpc`] 的旁路说明）。
 //! 未在 host 注册过的动作走 ACP 的 `-32601 method not found` 语义，不 panic。
 //!
+//! **host 基线**：生产入口 [`AcpHostHandle::from_gateway_config`] 默认注册
+//! `initialize` / `logout`（见 [`agent_acp::host_baseline`]）；[`AcpHostHandle::start`]
+//! 则按调用方传入的 [`HostConfig`] 原样起，**不做隐式注册**。
+//!
 //! **仍未做的部分（诚实登记）**：
 //! - 传输仍是宿主注入的 [`Transport`]（测试/后续卡用 `mock_transport()` 或
 //!   `stdio::spawn_stdio` 后的对端），网关自己不 spawn 子进程、不自建管道；
@@ -25,6 +29,7 @@ use std::time::Duration;
 
 use agent_acp::control::TopLevel;
 use agent_acp::host::{Host, HostConfig, HostEvent, NextEvent};
+use agent_acp::host_baseline::{register_baseline, BaselineConfig};
 use agent_acp::message::{JsonRpcRequest, Message, RequestId};
 use agent_acp::router::RpcOutcome;
 use agent_acp::transport::Transport;
@@ -240,9 +245,17 @@ impl AcpHostHandle {
     /// 用 [`GatewayConfig`] 起 host：本卡的 `GatewayConfig` 不带 ACP 侧参数
     /// （路径/isolation 都是握手与运行时面），故取 [`HostConfig::default`]。
     /// 传输由调用方注入（网关不 spawn 子进程）。
+    ///
+    /// **与 [`AcpHostHandle::start`] 的默认值不同**：这里是网关启动 ACP host 的
+    /// **生产入口**，要跟真实对端说话，故默认注册 host 基线（`initialize` /
+    /// `logout`，协议版本取 [`BaselineConfig::default`]）。`start` 接受调用方显式
+    /// 传入的 [`HostConfig`]，语义是「按调用方要求原样起」，因此**不加任何隐式注册**
+    /// （未注册方法仍回 `-32601`）。理由见 `docs/contracts/acp-host.md` §8.4。
     #[must_use]
     pub fn from_gateway_config(_config: &GatewayConfig, transport: Transport) -> Self {
-        Self::start(transport, HostConfig::default())
+        let handle = Self::start(transport, HostConfig::default());
+        register_baseline(&handle.inner, &BaselineConfig::default());
+        handle
     }
 
     /// 注册入站 ACP 方法 handler（同名重复注册 = 覆盖）。
