@@ -35,6 +35,7 @@ pub mod error;
 pub mod manifest;
 pub mod paths;
 pub mod registry;
+pub mod skills;
 pub mod validate;
 pub mod validate_errors;
 
@@ -51,5 +52,6 @@ pub use registry::{
     ExpertOrigin, ExpertPackage, ExpertRegistry, ExpertRoot, ExpertScope, OverrideRecord,
     RegistryEntry, RegistryFile, ShadowedExpert,
 };
+pub use skills::{MountedSkill, VisibleSkill, catalog_roots, mount_expert_skills, mounted_name, resolve_mounted, visible_skills};
 pub use validate::{RuleSet, ValidateContext, ValidationReport, Validator};
 pub use validate_errors::{ItemError, ValidateError};
