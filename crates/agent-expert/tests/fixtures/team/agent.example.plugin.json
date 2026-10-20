@@ -1,0 +1,55 @@
+{
+  "name": "code-reviewer",
+  "version": "1.0.0",
+  "description": "Single reviewer that checks a diff against a fixed checklist.",
+  "expertType": "agent",
+  "agentName": "code-reviewer",
+  "agents": [
+    "./agents/code-reviewer.md"
+  ],
+  "displayName": {
+    "zh": "代码审阅官",
+    "en": "Code Reviewer"
+  },
+  "profession": {
+    "zh": "代码审阅官",
+    "en": "Code Reviewer"
+  },
+  "displayDescription": {
+    "zh": "只负责按清单审阅一份代码改动，逐条给出结论与证据路径，不修改代码，也不调用其他智能体。",
+    "en": "Reviews one diff against a fixed checklist and cites evidence paths only."
+  },
+  "categoryId": "02-Engineering",
+  "defaultInitPrompt": {
+    "zh": "审阅这份改动",
+    "en": "Review this diff"
+  },
+  "tags": [
+    {
+      "zh": "代码",
+      "en": "code"
+    },
+    {
+      "zh": "审阅",
+      "en": "review"
+    },
+    {
+      "zh": "质量",
+      "en": "quality"
+    }
+  ],
+  "quickPrompts": [
+    {
+      "zh": "审阅这份改动",
+      "en": "Review this diff"
+    },
+    {
+      "zh": "检查测试",
+      "en": "Check tests"
+    },
+    {
+      "zh": "列出风险",
+      "en": "List risks"
+    }
+  ]
+}

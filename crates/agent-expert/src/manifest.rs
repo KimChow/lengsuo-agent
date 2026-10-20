@@ -16,6 +16,7 @@ use serde_json::Value;
 use std::str::FromStr;
 
 use crate::error::ExpertError;
+use crate::team::packet::TeamWorkflow;
 
 /// 必填字段（§3.1「必填」列；`plugin` 例外见 `ExpertManifest` 文档）。
 const REQUIRED_FIELDS: &[&str] = &[
@@ -99,6 +100,9 @@ pub struct TeamInfo {
     /// 团员 agent 名列表（不含主理人）。
     #[serde(default)]
     pub member_agents: Vec<String>,
+    /// 团队工作流契约（只 schema 不运行，默认 `None`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<TeamWorkflow>,
 }
 
 /// 专家类型（wire 值 `agent` / `team`；§3.1 与样本一致）。
