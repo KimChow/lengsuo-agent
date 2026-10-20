@@ -85,6 +85,9 @@ impl Runtime {
                 Ok(StepOutcome::ToolSettled)
             }
             Decision::Allow => {
+                // 不可中断段（金标 `step.ts:141`「Keep the final tool and Step events
+                // uninterruptible」）：ToolCall 已写进会话历史，本工具必须在本步内跑
+                // 完并结算；此处**不**检查取消标志——取消只在 `run_turn` 的步边界生效。
                 // MCP 路由（C1）：`mcp:<server>:<tool>` 形状且宿主注入了 MCP 调用
                 // 端口时，不走既有 [`ToolExecutor`]，改由宿主端口投递到
                 // [`agent_mcp::TrustedClient`]（wb 24 册 规则 A24-1 的寻址格式）。

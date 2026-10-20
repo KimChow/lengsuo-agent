@@ -197,6 +197,12 @@ fn run(app: &App, action: &str, p: &Value) -> Result<Value, Failure> {
             json!({"sessionId":receipt.session_id,"events":receipt.events,"lastSeq":receipt.last_seq})
         }
         "session:stop" => json!(rt.stop_session(own(app, p)?).map_err(core)?),
+        // 回合取消：**fire-and-forget**——`cancel_session` 只置标志后立即返回
+        // 当前快照，不等回合 finalizer（金标 run-coordinator.ts:163-166
+        // 「callers like the interrupt endpoint must acknowledge immediately
+        // even when finalizers are slow」）。与会改状态的 `session:stop`
+        // 是两个并存动作。
+        "session:cancel" => json!(rt.cancel_session(own(app, p)?).map_err(core)?),
         // core `Runtime::replay` 的薄暴露：`seq > after_seq` 升序一页，不做缓存/过滤/重排。
         "session:replay" => {
             let id = own(app, p)?;

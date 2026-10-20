@@ -1,11 +1,13 @@
 //! 会话生命周期：创建、查询、列表、更新与状态迁移。
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::error::CoreError;
+use crate::run_status::RunEvent;
 use crate::schema::{Isolation, Mode, PermissionMode, Session, SessionStatus};
 
 use super::{now_ms, preview, CreateSession, HotSession, Runtime};
@@ -56,6 +58,8 @@ impl Runtime {
             HotSession {
                 session: session.clone(),
                 drain: Arc::new(Mutex::new(())),
+                // 生命周期：会话创建时取消标志初始为 false。
+                cancel: Arc::new(AtomicBool::new(false)),
             },
         );
         self.emit(
@@ -215,8 +219,29 @@ impl Runtime {
     }
 
     /// 停止回合：状态回 idle（不销毁历史）。
+    ///
+    /// 与 [`Runtime::cancel_session`] 是**两个并存的动作**：本方法只改状态、
+    /// 不设取消标志；取消只置标志、不改状态。
     pub fn stop_session(&self, id: Uuid) -> Result<Session, CoreError> {
         self.set_status(id, SessionStatus::Idle)
+    }
+
+    /// 回合收口：运行态 `turn_completed → idle`（wb 26 册 §1.2）。
+    ///
+    /// `SessionStatus` 自建会话起即为 `Idle`（本仓回合不置 `Running`，故这里
+    /// 不改可观测状态、也不发 `session_update`）；`Session.run_status` 已接线时
+    /// 按转移表推进，未接线（本卡默认 `None`）时保持原样——运行状态机的持久化
+    /// 与恢复后置到状态机卡，与「不做 session_resume」的本卡边界一致。
+    pub(super) fn settle_turn_completed(&self, id: Uuid) {
+        let mut guard = self.sessions.lock().expect("会话表锁不得毒化");
+        let Some(hot) = guard.get_mut(&id) else {
+            return;
+        };
+        hot.session.status = SessionStatus::Idle;
+        if let Some(status) = hot.session.run_status.as_mut() {
+            status.apply(RunEvent::TurnCompleted, now_ms());
+        }
+        hot.session.updated_at_ms = now_ms();
     }
 
     /// 结束会话：`done` 后拒绝新输入。

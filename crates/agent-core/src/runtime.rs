@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -71,6 +72,8 @@ struct HotSession {
     session: Session,
     /// 单队列投递锁：同一会话的回合串行执行，后到的输入不插入进行中的步。
     drain: Arc<Mutex<()>>,
+    /// 回合取消令牌（跨线程）：`cancel_session` 置位，`run_turn` 每步开头检查。
+    cancel: Arc<AtomicBool>,
 }
 
 /// 运行时句柄（克隆共享）。
@@ -188,6 +191,36 @@ impl Runtime {
     fn set_executor_slot(&self, executor: Option<Arc<dyn ToolExecutor + Send + Sync>>) {
         *self.executor.lock().expect("执行器锁不得毒化") = executor;
     }
+
+    /// 取消当前回合（**fire-and-forget**）：置位取消标志后立即返回当前快照。
+    ///
+    /// 对齐金标 `run-coordinator.ts:163-166`：「callers like the interrupt
+    /// endpoint must acknowledge immediately even when finalizers are slow」。
+    /// 本方法不等回合结算、也不改 `SessionStatus`（与 [`Runtime::stop_session`]
+    /// 是两个并存的动作）；回合在**下一步开头**观察到标志后收口。
+    pub fn cancel_session(&self, id: Uuid) -> Result<Session, CoreError> {
+        let guard = self.sessions.lock().expect("会话表锁不得毒化");
+        let Some(hot) = guard.get(&id) else {
+            return Err(CoreError::SessionNotFound(id));
+        };
+        hot.cancel.store(true, Ordering::SeqCst);
+        Ok(hot.session.clone())
+    }
+
+    /// 会话的取消令牌（回合开始/结束由 `turns.rs` 复位；跨线程共享）。
+    pub(super) fn cancel_token(&self, id: Uuid) -> Result<Arc<AtomicBool>, CoreError> {
+        let guard = self.sessions.lock().expect("会话表锁不得毒化");
+        guard
+            .get(&id)
+            .map(|hot| Arc::clone(&hot.cancel))
+            .ok_or(CoreError::SessionNotFound(id))
+    }
+
+    /// 取消标志的当前值（生命周期单元测试的观测面）。
+    #[cfg(test)]
+    fn cancel_requested(&self, id: Uuid) -> Result<bool, CoreError> {
+        Ok(self.cancel_token(id)?.load(Ordering::SeqCst))
+    }
 }
 
 mod approvals;
@@ -199,6 +232,7 @@ mod task_tools;
 mod tasks;
 mod tool_result;
 mod turns;
+mod turns_settle;
 
 pub use task_tools::TaskToolExecutor;
 pub use tasks::{Task, TaskStatus};
@@ -248,5 +282,38 @@ impl Runtime {
     /// 消息行的时间一律来自事件自身携带的时刻，投影器从不读运行期内存）。
     pub(super) fn turn_ts(&self) -> u64 {
         now_ms()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::EchoProvider;
+
+    fn runtime() -> Runtime {
+        let dir = std::env::temp_dir().join(format!("cancel-flag-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("workdir");
+        Runtime::builder()
+            .workdir(&dir)
+            .provider(Arc::new(EchoProvider))
+            .build()
+            .expect("runtime")
+    }
+
+    /// 标志生命周期（一）：会话创建时初始化为 false；`cancel_session` 只置位
+    /// 并返回当前快照，不改 `SessionStatus`。
+    #[test]
+    fn cancel_flag_starts_false_and_cancel_session_only_sets_the_flag() {
+        let rt = runtime();
+        let session = rt
+            .create_session(&CreateSession::plain("cancel", Isolation::local_default()))
+            .expect("session");
+        assert!(
+            !rt.cancel_requested(session.id).expect("token"),
+            "会话创建时取消标志必须为 false"
+        );
+        let snapshot = rt.cancel_session(session.id).expect("cancel");
+        assert!(rt.cancel_requested(session.id).expect("token"));
+        assert_eq!(snapshot.status, session.status, "cancel 不改状态");
     }
 }

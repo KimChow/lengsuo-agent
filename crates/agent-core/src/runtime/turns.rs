@@ -1,5 +1,7 @@
 //! 回合执行：send_text（单队列投递）、run_turn（步驱循环）、单步原语
-//! [`Runtime::step`](StepOutcome)、工具调用/结果记录与 check_tool。
+//! [`Runtime::step`](StepOutcome)；结算与记账一族在 `turns_settle.rs`
+//! （纯搬移、零行为变更），本文件只保留回合政策：投递、步循环、逐步分派与
+//! `done` 收口。
 //!
 //! 步语义：一步 = 一次逻辑 LLM 调用。
 //! - 用户输入本身也是一条 durable 事件（金标 `session-event` 的 user 消息
@@ -11,20 +13,11 @@
 //!   不在本步内存里续消费，由重读历史后的新一步重新产出；
 //! - 工具调用先落进会话历史再结算结果；下一步**重读会话历史**（ToolCall 与
 //!   ToolResult 成对在列）后再发起新的一次调用；
-//! - 工具步结算（金标 opencode `step.ts:91-134`：门检 → executeTool → 截断入
-//!   历史 → 发布；失败走 failTool 结算成结果而非中断回合）：注入执行器时按
-//!   [`Runtime::check_tool`] 判定真实执行；未注入/需审批时保持「待宿主执行」
-//!   占位，真实结果由宿主经 [`Runtime::record_tool_result`] 回填；
-//! - 步数达上限仍未收敛 ⇒ **末步缴械**（金标 opencode `max-steps.ts` + `llm.ts` 的
-//!   `stepLimitReached` 分支）：以 `toolChoice=none` 追加一次纯文本总结步
-//!   （`MAX_STEPS_PROMPT` 临时进请求历史副本，工具定义保留以维持 provider 缓存
-//!   前缀），该步的工具请求不执行、回错误结果，随后以
-//!   `done{status:"max_steps_reached"}` 收口（沿用既有熔断事件形状）。
-//! - 交付物提醒（wb 18 册 §4 的 present outcome 强制级下沉）：Craft/Expert 下
-//!   任务文本含写意图（创建/写入/修改）却整回合未成功执行任何写/执行工具且
-//!   **自然收敛** ⇒ 向会话追加一条提醒 user 消息后走一次提醒回合（正常步循
-//!   环，步数与本回合共享 [`Runtime::max_turn_steps`]），整个 `send_text` 至多一次；
-//!   缴械（`Surrendered`）与被拒终止（`Aborted`）不提醒。
+//! - 工具步结算（金标 opencode `step.ts:91-134`）：注入执行器时按
+//!   [`Runtime::check_tool`] 判定执行；未注入/需审批时保持「待宿主执行」占位，
+//!   真实结果由宿主经 [`Runtime::record_tool_result`] 回填；
+//! - 到限 ⇒ 末步缴械（`toolChoice=none` 总结步）⇒ `done{max_steps_reached}`；
+//! - 自然收敛 ⇒ 交付物提醒（Craft/Expert + 写意图 + 未执行写工具，至多一次）。
 //!
 //! 分层（对齐金标 `step.ts` / `llm.ts`）：[`Runtime::step`] 是「一步」的完整
 //! 原语（读会话 → 组上下文 → 恰好一次 provider 调用 → 消费产出 → 工具结算 →
@@ -33,18 +26,17 @@
 //! 与 deny 记账都由调用方持有，原语不藏全局态。
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use serde_json::{json, Value};
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::error::CoreError;
-use crate::permission::Decision;
-use crate::provider::{ProviderStep, StepOptions, ToolChoice};
-use crate::r#loop::MAX_STEPS_PROMPT;
-use crate::schema::{Event, Message, Mode, Role, Session, SessionStatus, ToolInfo};
+use crate::provider::{StepOptions, ToolChoice};
+use crate::schema::{Event, Message, Mode, Role, SessionStatus};
 
-use super::{now_ms, Runtime, TurnReceipt};
+use super::{Runtime, TurnReceipt};
 
 /// 交付物意图关键词（卡面冻结：创建/写入/修改）。
 ///
@@ -88,23 +80,6 @@ pub enum StepOutcome {
 }
 
 impl Runtime {
-    /// 本回合实际生效的单回合步数上限（一步 = 一次逻辑 LLM 调用）。
-    ///
-    /// 对齐金标 opencode `llm.ts:226` 的 `stepLimitReached = agent.info.steps !==
-    /// undefined && step >= agent.info.steps`：上限是**每 agent 的配置值**，不是写死
-    /// 常量。本仓 agent 级配置面 v0 尚未落地，故挂在
-    /// [`RuntimeConfig::max_turn_steps`] 上，默认值仍来自既有常量
-    /// [`crate::r#loop::DEFAULT_MAX_STEPS`]（默认行为不变）。配置锁中毒时退回默认值：
-    /// 上限属安全阀，取不到配置也不该让回合起不来。
-    ///
-    /// [`RuntimeConfig::max_turn_steps`]: crate::config::RuntimeConfig::max_turn_steps
-    fn max_turn_steps(&self) -> usize {
-        self.config
-            .lock()
-            .map(|c| c.max_turn_steps)
-            .unwrap_or(crate::config::DEFAULT_MAX_TURN_STEPS)
-    }
-
     /// 发送一条用户输入，跑一个回合（echo provider 下即回显）。
     ///
     /// 单队列投递：同一会话的回合串行执行；后到的输入在回合之外排队，
@@ -153,6 +128,12 @@ impl Runtime {
         history: &[Message],
         first_event: Event,
     ) -> Result<TurnReceipt, CoreError> {
+        // 取消令牌：回合开始复位（防上一轮取消吃掉本轮）；`_cancel_reset` 在
+        // 正常/取消/失败（含 `?` 提前返回）退出时都复位。
+        let cancel = self.cancel_token(id)?;
+        cancel.store(false, Ordering::SeqCst);
+        let _cancel_reset = CancelReset(cancel.clone());
+        let turn_start = history.len();
         let mut events: Vec<Event> = vec![first_event];
         // 首步用「回合前历史 + 本轮输入」；续步重读会话历史（本轮输入已在其中）。
         let mut pre_turn = Some(history.to_vec());
@@ -169,6 +150,12 @@ impl Runtime {
         let mut reminder_used = false;
 
         loop {
+            // 取消只在步与步之间生效：本步正在执行的工具必须跑完结算
+            // （金标 step.ts:141「Keep the final tool and Step events uninterruptible」）。
+            if cancel.load(Ordering::SeqCst) {
+                self.settle_cancelled(id, &mut events, steps, turn_start)?;
+                break;
+            }
             let outcome = if steps >= max_turn_steps {
                 // 到限不硬停：走一次缴械步（toolChoice=none 的纯文本总结步）。
                 self.surrender_step(id, &mut denied_tools, &mut write_executed, &mut events)?
@@ -279,11 +266,9 @@ impl Runtime {
     /// 请求三要素（`history` / `user_text` / `options`）由回合政策层准备
     /// （对齐金标 `llm.ts` `runStep` 的组装位）：首步传回合前历史快照 + 本轮
     /// 输入；续步传重读的会话历史 + 空 `user_text`；缴械步传「会话历史 +
-    /// [`MAX_STEPS_PROMPT`] 副本」且 `tool_choice=None`。`tool_choice=None` 时
+    /// `MAX_STEPS_PROMPT` 副本」且 `tool_choice=None`。`tool_choice=None` 时
     /// 本步工具请求不执行、按金标 `step.ts:91-94` 回错误结果（不落 ToolCall
-    /// 消息），走向为 [`StepOutcome::Surrendered`]；正常步走既有
-    /// `next_steps_with_context` 入口，缴械步走带选项入口（调用面与抽出前
-    /// 逐字一致）。
+    /// 消息），走向为 [`StepOutcome::Surrendered`]。
     ///
     /// `denied_tools`（同一工具二次被拒记账）与 `events`（事件累积器）由调用
     /// 方持有；本方法不发回合级 `done` 事件（那属 `run_turn` 的收口职责）。
@@ -314,7 +299,7 @@ impl Runtime {
     /// 传入 [`Runtime::execute_tool`] 的执行成功分支置位（交付物提醒的判定
     /// 输入）；语义与公开原语完全一致。
     #[allow(clippy::too_many_arguments)]
-    fn step_with_write_ledger(
+    pub(super) fn step_with_write_ledger(
         &self,
         id: Uuid,
         history: &[Message],
@@ -377,271 +362,18 @@ impl Runtime {
         )
     }
 
-    /// 末步缴械的政策准备 + 一步原语调用（金标 opencode `max-steps.ts` +
-    /// `llm.ts:226-247` 的 `stepLimitReached` 分支 + `step.ts:91-94`）：到限
-    /// 不硬停，把 [`MAX_STEPS_PROMPT`] 作为 assistant 消息**临时**拼进本次
-    /// 请求的 history 副本（不写会话历史——它不是真实产出），以
-    /// `tool_choice=None` 走 [`Runtime::step_with_write_ledger`]。该步的工具
-    /// 调用不执行（不调 [`Runtime::record_tool_call`]、不发待执行占位），按
-    /// `step.ts` 的 `executeTool` 回错误结果，走向为 [`StepOutcome::Surrendered`]。
-    fn surrender_step(
-        &self,
-        id: Uuid,
-        denied_tools: &mut BTreeSet<String>,
-        write_executed: &mut bool,
-        events: &mut Vec<Event>,
-    ) -> Result<StepOutcome, CoreError> {
-        let session = self.get_session(id)?;
-        // 续步口径：历史重读会话消息、本轮输入不再重复出现。
-        let mut history = session.messages.clone();
-        history.push(Message {
-            role: Role::Assistant,
-            content: MAX_STEPS_PROMPT.to_string(),
-            tool: None,
-            ts_ms: now_ms(),
-        });
-        self.step_with_write_ledger(
-            id,
-            &history,
-            "",
-            &StepOptions {
-                tool_choice: ToolChoice::None,
-            },
-            denied_tools,
-            write_executed,
-            events,
-        )
-    }
-
-    /// 缴械步工具请求的拒绝结算（金标 `step.ts:91-94`）：不执行、不落 ToolCall
-    /// 消息（未获准的调用不进历史），只回一条错误 `tool_result`（消息 + 事件，
-    /// 错误文本为金标原文）。
-    fn reject_disabled_tool(
-        &self,
-        id: Uuid,
-        _session: &Session,
-        name: &str,
-        args: Value,
-        events: &mut Vec<Event>,
-    ) -> Result<(), CoreError> {
-        let error = json!({
-            "type": "error",
-            "message": "Tools are disabled after the maximum agent steps",
-        });
-        // 结算落消息，取回型载荷（含消息时间）后补事件 kind 发出：消息 `ts_ms` 与
-        // 事件 `payload.tsMs` 同一次读数，重建取回真值。
-        let (_message, mut payload) = self.push_tool_result(id, name, args, &error.to_string())?;
-        payload["result"] = error;
-        payload["isError"] = json!(true);
-        let session = self.get_session(id)?;
-        events.push(self.emit(&session, "tool_result", payload)?);
-        Ok(())
-    }
-
-    /// 消费一步的产出：逐条落事件，遇工具调用或结束即止（批内尾随项属新一步）。
-    /// 返回本步终结处的工具调用；`None` 表示本步无工具调用 ⇒ 回合收敛。
-    fn consume_step(
-        &self,
-        id: Uuid,
-        session: &Session,
-        batch: Vec<ProviderStep>,
-        events: &mut Vec<Event>,
-    ) -> Result<Option<(String, Value)>, CoreError> {
-        for item in batch {
-            match item {
-                ProviderStep::Thinking(note) => {
-                    events.push(self.emit(
-                        session,
-                        "thinking",
-                        json!({ "text": self.redact(&note) }),
-                    )?);
-                }
-                ProviderStep::Text(reply) => {
-                    let reply = self.redact(&reply);
-                    // 同一次读数：消息 `ts_ms` 与事件 `payload.tsMs` 必然相等。
-                    let ts = self.turn_ts();
-                    let session =
-                        self.push_message(id, Role::Assistant, reply.clone(), None, ts)?;
-                    events.push(self.emit(
-                        &session,
-                        "text",
-                        json!({ "text": reply, "tsMs": ts }),
-                    )?);
-                }
-                // 本步止于首个工具调用；同批尾随项不在此消费。
-                ProviderStep::ToolCall { name, args } => return Ok(Some((name, args))),
-                ProviderStep::Finished => return Ok(None),
-            }
-        }
-        Ok(None)
-    }
-
-    /// 记录一次工具结果：大输出进 blob，消息只留摘要（§3 防分页打爆）。
-    pub fn record_tool_result(
-        &self,
-        id: Uuid,
-        tool: &str,
-        args: Value,
-        result: &str,
-    ) -> Result<Message, CoreError> {
-        let (message, payload) = self.push_tool_result(id, tool, args, result)?;
-        // 消息先落：emit 发生会话快照，取重读后的（`push_tool_result` 内已写入消息）。
-        let session = self.get_session(id)?;
-        self.emit(&session, "tool_result", payload)?;
-        Ok(message)
-    }
-
-    /// 追加工具调用消息（权限门放行后由宿主调用）。
-    pub fn record_tool_call(
-        &self,
-        id: Uuid,
-        tool: &str,
-        args: &Value,
-    ) -> Result<Session, CoreError> {
-        Ok(self.push_tool_call(id, tool, args, self.turn_ts())?.0)
-    }
-
-    /// 落一条 user / assistant 文本消息进会话（缺口 B4 的解法）。
-    ///
-    /// `Runtime` 此前只公开了工具类写消息面（[`Runtime::record_tool_call`] /
-    /// [`Runtime::record_tool_result`]）；user/assistant 文本只能经
-    /// [`Runtime::send_text`] 落，而它会自行跑完整个回合，不适合逐步驱动的宿主。
-    /// 本方法把「写一条文本消息」这一最小公开面补上，**内部复用既有
-    /// [`Runtime::push_message`]**（签名与可见性均不变），使 `loop` 的
-    /// `with_runtime` 路径能把历史真正落在会话上。
-    ///
-    /// 时间取一次时钟读数（与 [`Runtime::turn_ts`] 同一口径）；消息本身不落事件
-    /// （事件由调用方按自己的可见面决定发不发，与 `loop` 既有的 `text` 事件形状解耦）。
-    pub fn append_message(
-        &self,
-        id: Uuid,
-        role: Role,
-        content: &str,
-    ) -> Result<Session, CoreError> {
-        self.push_message(id, role, content.to_string(), None, self.turn_ts())
-    }
-
-    /// 经 `Runtime` 的 provider 面发起**一次** provider 调用（缺口 B1 的跑通件）。
-    ///
-    /// `loop` 的 `with_runtime` 路径不直接持有 `Provider`（注入面为
-    /// `Arc<dyn Provider>`，隐含 `'static`），故经本方法转调：上下文由
-    /// [`Runtime::build_turn_context`] 按 `session` 的模式与记忆组装（与
-    /// [`Runtime::send_text`] 的 `step` 同款口径，对齐金标 `session/context.ts`），
-    /// 历史取调用方给的 `history`（即 `loop` 每步从会话**重读**的那一份），
-    /// `user_text` 为空（续步口径：本轮输入早已作为会话消息在 `history` 里）。
-    ///
-    /// 返回原始 [`ProviderStep`] 序列，由 `loop` 侧译成其 [`ChatTurn`]
-    /// （`ProviderStep::ToolCall` 无 id，故 id 在 `loop` 侧按序合成；缺口 B5）。
-    ///
-    /// [`ChatTurn`]: crate::r#loop::ChatTurn
-    pub(crate) fn chat_turn(
-        &self,
-        id: Uuid,
-        history: &[Message],
-        options: Option<&StepOptions>,
-    ) -> Result<Vec<ProviderStep>, CoreError> {
-        let session = self.get_session(id)?;
-        if matches!(session.status, SessionStatus::Done | SessionStatus::Failed) {
-            return Err(CoreError::SessionClosed(id));
-        }
-        let context = self.build_turn_context(&session, history, "");
-        match options {
-            Some(options) => self.provider.next_steps_with_options(&context, options),
-            None => self.provider.next_steps_with_context(&context),
-        }
-    }
-
-    /// 结算**一次**工具调用（缺口 B1：`with_runtime` 路径的工具由 Runtime 执行）。
-    ///
-    /// 与 [`Runtime::step_with_write_ledger`] 的工具分支同款口径，但**不含**
-    /// provider 调用——`loop` 侧已在同一步里经 [`Runtime::chat_turn`] 取回工具请求，
-    /// 本方法只负责「落调用 → 门检 → 执行 → 结算结果」（金标 `step.ts:91-134`），
-    /// 使结果与调用成对进会话历史，下一步重读可复原。返回原语走向（正常为
-    /// [`StepOutcome::ToolSettled`]；`loop` 侧按每步一次调用、每次传入空 deny
-    /// 账本，故不会在此触发 `Aborted`）。
-    ///
-    /// `events` 是 Runtime 自己的事件面（落 `EventLog`）；与 `loop` 侧按既有形状
-    /// 补发的事件是两个不同的可见面（缺口 B5，见 `docs/loop-adapter-status.md`）。
-    pub(crate) fn settle_tool_call(
-        &self,
-        id: Uuid,
-        name: &str,
-        args: &Value,
-    ) -> Result<StepOutcome, CoreError> {
-        let ts = self.turn_ts();
-        let (session, args_ref) = self.push_tool_call(id, name, args, ts)?;
-        let args = self.redactor.redact_json(args);
-        let mut events = vec![self.emit(
-            &session,
-            "tool_use",
-            json!({
-                "name": name,
-                "args": args.clone(),
-                "argsRef": args_ref,
-                "tsMs": ts,
-            }),
-        )?];
-        // 单次调用、空 deny 账本：本步只结算一次，引擎侧不会在此熔断。
-        let mut denied: BTreeSet<String> = BTreeSet::new();
-        let mut write_executed = false;
-        self.execute_tool(
-            id,
-            &session,
-            name,
-            &args,
-            &mut denied,
-            &mut write_executed,
-            &mut events,
-        )
-    }
-
     /// 交付物提醒文案（**单一来源**：`loop` 层两条路径都取这里这一份）。
     pub(crate) fn deliverable_reminder_note(&self) -> &'static str {
         DELIVERABLE_REMINDER_NOTE
     }
+}
 
-    /// [`Runtime::record_tool_call`] 的实现体：**消息时间由调用方取一次时钟读数并显式
-    /// 传入**，与随后 `tool_use` 事件 payload 的 `"tsMs"` 用同一次读数（理由同
-    /// [`Runtime::turn_ts`]）。返回 `(会话快照, blob 引用)`，`args_ref` 由调用方随事件
-    /// payload 的 `"argsRef"` 一起发出，使事件自足、重建能取回同一个引用。
-    pub(super) fn push_tool_call(
-        &self,
-        id: Uuid,
-        tool: &str,
-        args: &Value,
-        ts_ms: u64,
-    ) -> Result<(Session, Option<String>), CoreError> {
-        let args = self.redactor.redact_json(args);
-        let args_ref = self
-            .blobs
-            .put(args.to_string().as_bytes())
-            .map(|r| r.0)
-            .ok();
-        let summary = self.redactor.summarize_args(&args);
-        let session = self.push_message(
-            id,
-            Role::ToolCall,
-            summary,
-            Some(ToolInfo {
-                name: tool.to_string(),
-                args_ref: args_ref.clone(),
-                result_ref: None,
-                ms: None,
-            }),
-            ts_ms,
-        )?;
-        Ok((session, args_ref))
-    }
+/// 回合退出（正常/取消/失败）复位取消标志；`Drop` 覆盖 `?` 提前返回路径。
+struct CancelReset(Arc<AtomicBool>);
 
-    /// 权限判定（工具执行前的唯一入口）。
-    pub fn check_tool(&self, id: Uuid, tool: &str, args: &Value) -> Result<Decision, CoreError> {
-        let session = self.get_session(id)?;
-        if matches!(session.status, SessionStatus::Done | SessionStatus::Failed) {
-            return Err(CoreError::SessionClosed(id));
-        }
-        Ok(self
-            .gate
-            .check(session.mode, session.permission_mode, tool, args))
+impl Drop for CancelReset {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
