@@ -16,6 +16,7 @@ pub mod mode;
 pub mod permission;
 pub mod provider;
 pub mod redact;
+pub mod run_status; // 本卡（h1-run-status-schema）仅声明模块；`pub use` 由 h1-host-services 统一补
 pub mod runtime;
 pub mod schema;
 pub mod sensitive;

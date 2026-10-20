@@ -31,6 +31,7 @@ impl Runtime {
             status: SessionStatus::Idle,
             last_seq: 0,
             memory_digest: None,
+            run_status: None,
         };
         // 会话绑定环境时，隔离键 env_id 必须与绑定一致（环境隔离边界）。
         if let Some(env) = &session.env_binding {

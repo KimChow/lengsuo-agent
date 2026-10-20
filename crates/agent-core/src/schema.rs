@@ -159,6 +159,10 @@ pub struct Session {
     /// 三层记忆组装摘要（memory.enabled 时由 create_session 注入；agent-memory-spec §4）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_digest: Option<String>,
+    /// 运行状态机（wb 26 册 §1.1）。旧日志无此字段 ⇒ `None` ⇒ 读侧按 `status` 兼容；
+    /// 本卡只落字段，不做回放/读取（P0-5）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_status: Option<crate::run_status::RunStatus>,
 }
 
 impl Session {

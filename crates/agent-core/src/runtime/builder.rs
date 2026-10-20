@@ -97,6 +97,7 @@ impl RuntimeBuilder {
                         updated_at_ms: now_ms(),
                         status: SessionStatus::Idle,
                         last_seq,
+                        run_status: None,
                     },
                 },
             );
