@@ -163,6 +163,9 @@ pub struct Session {
     /// 本卡只落字段，不做回放/读取（P0-5）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_status: Option<crate::run_status::RunStatus>,
+    /// 当前绑定的专家 id（= 专家包 name / 目录名）。None ⇒ 普通 craft/expert 模式。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expert_id: Option<String>,
 }
 
 impl Session {

@@ -116,6 +116,7 @@ impl RuntimeBuilder {
                         status: SessionStatus::Idle,
                         last_seq,
                         run_status: None,
+                        expert_id: None,
                     },
                 },
             );

@@ -50,6 +50,26 @@ pub enum CoreError {
     /// 任务看板操作失败；字符串透传 `agent_tasks::TaskError` 原始文案（不吞原因）。
     #[error("{0}")]
     Task(String),
+
+    /// 专家不可用（召唤 / 组装期取人格失败）。`code` 是可读错误码：`EXPERT_NOT_FOUND`
+    /// 表示双根里没有该 id，其余为专家包载入/校验的稳定错误码（如 `TAG_COUNT`）；
+    /// 显式带 `expert_id` 便于宿主定位。
+    #[error("专家不可用（{code}）{expert_id}: {reason}")]
+    ExpertUnavailable {
+        expert_id: String,
+        code: String,
+        reason: String,
+    },
+}
+
+impl CoreError {
+    /// 错误码（宿主据此区分失败类别；非专家类错误返回 `None`）。
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            Self::ExpertUnavailable { code, .. } => Some(code),
+            _ => None,
+        }
+    }
 }
 
 impl From<agent_memory::MemoryError> for CoreError {

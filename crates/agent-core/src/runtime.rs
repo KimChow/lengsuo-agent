@@ -240,6 +240,9 @@ pub use skills::{SkillInjection, SKILL_CONTENT_NOTICE, SKILL_INJECTED_EVENT};
 // 宿主只需依赖 `agent-core` 即可完成注入调用（`agent-core` 是技能面的唯一
 // 公开入口，`agent-skills` 保持「不做注入」的职责边界）。
 pub use agent_skills::{InvocationSource, SkillCatalog};
+// 专家召唤面（h4-expert-session-bind）：宿主只需依赖 `agent-core` 即可完成召唤
+// （`Runtime::update_session` 的 `expert_id` 三态参数与 `Runtime::bind_expert`）。
+pub use sessions::{expert_bind, ExpertDirs};
 pub use task_tools::TaskToolExecutor;
 pub use tasks::{Task, TaskStatus};
 pub use turns::StepOutcome;
