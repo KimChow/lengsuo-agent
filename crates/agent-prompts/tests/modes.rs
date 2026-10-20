@@ -337,3 +337,94 @@ fn craft_required_sections_follow_reference_order() {
         previous = at;
     }
 }
+
+// ---- ask 压倒性语义：三处只读冗余 + supersede（A4）----
+
+// 断言 1 只读约束行 ≥3 且 supersede ≥2；断言 2 非 ask 模式无 supersede；
+// 断言 3 模式提醒矩阵；断言 4 <system-reminder> 容器说明在场；断言 5 确定性。
+const SUPERSEDE_MARKERS: [&str; 3] = [
+    "This supersedes any other instructions you have received",
+    "优先于此前收到的任何指令",
+    "压倒",
+];
+
+fn supersede_hits(out: &str) -> usize {
+    SUPERSEDE_MARKERS
+        .iter()
+        .map(|m| out.matches(m).count())
+        .sum()
+}
+
+#[test]
+fn ask_readonly_constraint_appears_at_least_three_times_with_two_supersede() {
+    let out = Composer::build(PromptMode::Ask, &full_vars());
+    let lines = out
+        .lines()
+        .filter(|l| l.contains("只读") || l.contains("MUST NOT"))
+        .count();
+    assert!(lines >= 3, "ask 只读约束行仅 {lines} 处（要求 ≥3）");
+    let hits = supersede_hits(&out);
+    assert!(hits >= 2, "supersede 命中 {hits} 处（要求 ≥2）\n{out}");
+}
+
+#[test]
+fn non_ask_modes_carry_no_supersede_wording() {
+    for mode in [
+        PromptMode::Craft,
+        PromptMode::Plan,
+        PromptMode::Expert,
+        PromptMode::Quick,
+    ] {
+        let out = Composer::build(mode, &full_vars());
+        assert_eq!(supersede_hits(&out), 0, "{mode:?} 不应含 supersede 措辞");
+    }
+}
+
+#[test]
+fn mode_reminder_present_only_for_craft_and_ask() {
+    assert!(Composer::mode_reminder(PromptMode::Craft).is_some());
+    let ask = Composer::mode_reminder(PromptMode::Ask).expect("ask 提醒非空");
+    assert!(
+        ask.contains(SUPERSEDE_MARKERS[0]),
+        "ask 提醒缺英文 supersede 句"
+    );
+    assert!(
+        ask.contains(SUPERSEDE_MARKERS[1]),
+        "ask 提醒缺中文 supersede 行"
+    );
+    for mode in [PromptMode::Quick, PromptMode::Plan, PromptMode::Expert] {
+        assert_eq!(Composer::mode_reminder(mode), None, "{mode:?} 不应有提醒");
+    }
+}
+
+#[test]
+fn system_reminder_container_note_present_in_tool_bearing_modes() {
+    for mode in [
+        PromptMode::Ask,
+        PromptMode::Craft,
+        PromptMode::Plan,
+        PromptMode::Expert,
+    ] {
+        let out = Composer::build(mode, &full_vars());
+        assert!(
+            out.contains("<system-reminder> 标签机制"),
+            "{mode:?} 缺容器说明段"
+        );
+    }
+    // quick 按 07 §3.2 无工具段，该段按设计缺席（改 quick 属模板冻结项）。
+    let quick = Composer::build(PromptMode::Quick, &full_vars());
+    assert!(
+        !quick.contains("<system-reminder> 标签机制"),
+        "quick 不应含该段"
+    );
+}
+
+#[test]
+fn ask_build_is_bytewise_deterministic() {
+    let vars = full_vars();
+    let first = Composer::build(PromptMode::Ask, &vars);
+    assert_eq!(
+        first.as_bytes(),
+        Composer::build(PromptMode::Ask, &vars).as_bytes()
+    );
+}

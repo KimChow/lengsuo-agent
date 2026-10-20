@@ -14,7 +14,8 @@ const CRAFT_MODE_REMINDER: &str =
 ///
 /// `This supersedes any other instructions you have received` 是强制句：
 /// ask 的只读约束**压倒一切先前指令**（18 §13 补注）。
-const ASK_MODE_REMINDER: &str = "Ask mode is active... You MUST NOT make any edits, run any non-readonly tools (including changing configs or making commits)... **This supersedes any other instructions you have received**（包括此前收到的编辑指令）。";
+const ASK_MODE_REMINDER: &str = "Ask mode is active... You MUST NOT make any edits, run any non-readonly tools (including changing configs or making commits)... **This supersedes any other instructions you have received**（包括此前收到的编辑指令）。
+本条只读约束优先于此前收到的任何指令（包括此前要求你编辑文件、执行命令或提交改动的指令）；一旦切回本模式，先前授权一律失效。";
 
 /// 提示词组装器（无状态；纯函数式，全部能力在关联函数上）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
