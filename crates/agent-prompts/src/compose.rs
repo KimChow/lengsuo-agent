@@ -1,6 +1,9 @@
 //! 组装器：模式模板 × 变量注入 → 提示词文本。
+//!
+//! 渲染管线（段序列 → 文本）在本文件：域模型（[`crate::model`]）只描述
+//! 「段是什么」，「怎么拼成文本」属组装职责。
 
-use crate::model::{PromptMode, PromptVars};
+use crate::model::{PromptMode, PromptTemplate, PromptVariant, PromptVars, Segment};
 use crate::template;
 use crate::templates::identity;
 
@@ -25,8 +28,21 @@ impl Composer {
     /// 模式模板 + 变量替换 + 硬规则段，产出完整系统提示词。
     ///
     /// 确定性：输出只取决于 `mode` 与 `vars`，不注入时间戳、不读环境变量、不做 IO。
+    ///
+    /// **兼容入口**：等价于 [`Self::build_with`] 传 [`PromptVariant::Default`]——
+    /// 既有调用方与既有快照**零改动**（变体层是叠加维度，不改默认输出）。
     pub fn build(mode: PromptMode, vars: &PromptVars) -> String {
-        template::template_for(mode).render(vars)
+        Self::build_with(mode, PromptVariant::Default, vars)
+    }
+
+    /// 模式 × 变体模板 + 变量替换 + 硬规则段，产出完整系统提示词。
+    ///
+    /// 变体只追加一段「变体侧重」（不碰能力面、公共层与硬规则）；
+    /// 变体不被该模式支持时按回落表回落到默认变体（回落在输出上可观测）。
+    ///
+    /// 确定性：输出只取决于 `mode`、`variant` 与 `vars`，不做 IO、不取时钟。
+    pub fn build_with(mode: PromptMode, variant: PromptVariant, vars: &PromptVars) -> String {
+        template::template_for_variant(mode, variant).render(vars)
     }
 
     /// plan 门禁片段（可单独取用，供宿主追加到自有模板末尾）。
@@ -58,4 +74,100 @@ impl Composer {
     pub fn identity_context(vars: &PromptVars) -> String {
         identity::render_context(vars)
     }
+}
+
+/// 渲染一个模板：段间以空行分隔，空槽位整段省略，末尾保留单个换行。
+///
+/// 条件段（[`Segment::If`]）：条件成立才渲染其内层段；不成立则整段省略，
+/// 不留空洞标题、不留多余空行。
+pub(crate) fn render_template(tpl: &PromptTemplate, vars: &PromptVars) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(tpl.segments().len());
+    render_segments(tpl.segments(), vars, tpl.mode(), &mut parts);
+    let mut out = parts.join("\n\n");
+    out.push('\n');
+    out
+}
+
+/// 渲染一段段序列（含条件段的内层递归），把非空段追加到 `parts`。
+fn render_segments(
+    segments: &[Segment],
+    vars: &PromptVars,
+    mode: PromptMode,
+    parts: &mut Vec<String>,
+) {
+    for segment in segments {
+        match segment {
+            Segment::Text(text) => push_part(parts, Some(substitute(text, vars))),
+            Segment::Var(key) => push_part(parts, slot(key, vars)),
+            Segment::Gate => push_part(parts, trim(template::PLAN_GATE)),
+            // 条件不成立 ⇒ 整段省略（与空值省略语义一致）。
+            Segment::If(cond, inner) => {
+                if cond.holds(vars, mode) {
+                    render_segments(inner, vars, mode, parts);
+                }
+            }
+        }
+    }
+}
+
+/// 追加一段：空段（纯空白）不进列表，避免留下空洞标题。
+fn push_part(parts: &mut Vec<String>, part: Option<String>) {
+    if let Some(part) = part {
+        if !part.trim().is_empty() {
+            parts.push(part);
+        }
+    }
+}
+
+/// 单遍替换 `{{key}}`：未知键与值中的花括号原样保留，不递归展开。
+fn substitute(text: &str, vars: &PromptVars) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        match after.find("}}") {
+            Some(end) => {
+                let key = &after[..end];
+                match vars.get(key) {
+                    Some(value) => out.push_str(value),
+                    // 未知键：原样保留花括号（内置模板不含未知键，注入值不再被替换）。
+                    None => {
+                        out.push_str("{{");
+                        out.push_str(key);
+                        out.push_str("}}");
+                    }
+                }
+                rest = &after[end + 2..];
+            }
+            None => {
+                out.push_str("{{");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// 槽位渲染：值非空（且非纯空白）时成段，否则整段省略，不留空洞标记。
+/// 六段可独立成节（人格设定 / 记忆四段 / 用户自定义规则）；
+/// 其余已知变量作为独立段时输出裸值；未知键省略。
+fn slot(key: &'static str, vars: &PromptVars) -> Option<String> {
+    let value = vars.get(key).and_then(trim)?;
+    match key {
+        "soul" => Some(format!("人格设定：\n{value}")),
+        "memory_identity" => Some(format!("## 身份\n{value}")),
+        "memory_user" => Some(format!("## 用户记忆\n{value}")),
+        "memory_project" => Some(format!("## 项目记忆\n{value}")),
+        "memory_daily" => Some(format!("## 当日日志\n{value}")),
+        "user_rules" => Some(format!("## 用户自定义规则\n{value}")),
+        _ => Some(value),
+    }
+}
+
+/// 去掉首尾空白；全空白视为空（返回 `None`）。
+fn trim(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }

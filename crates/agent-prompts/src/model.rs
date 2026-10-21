@@ -36,6 +36,58 @@ impl PromptMode {
     }
 }
 
+/// 提示词变体：同一模式下的**任务类型**维度（模式 × 变体 = 模板矩阵）。
+///
+/// 变体只追加「本轮关注什么」一段，**不改**能力面、公共层与硬规则；
+/// 与模式、与风格层都正交。
+///
+/// 未知变体名回落 [`PromptVariant::Default`]（⛔ 不 panic、不返回 `Option`）：
+/// 宿主把外部输入（配置 / 会话标签）转成变体时不因脏值崩掉。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PromptVariant {
+    /// 通用：不给模板加变体侧重。
+    Default,
+    /// 代码类：实现细节、边界与错误处理优先。
+    Code,
+    /// 编码类：完整实现、步骤顺序与异常状态优先。
+    Coding,
+    /// 设计类：结构、层次与可读性优先。
+    Design,
+}
+
+impl PromptVariant {
+    /// 固定顺序，便于遍历与快照测试。
+    pub const ALL: [PromptVariant; 4] = [
+        PromptVariant::Default,
+        PromptVariant::Code,
+        PromptVariant::Coding,
+        PromptVariant::Design,
+    ];
+
+    /// 变体名识别：大小写不敏感，`-` / `_` 与无分隔等价；未知值回落 `Default`。
+    ///
+    /// ⛔ 永不 panic：脏输入的归一化结果是「默认变体」，不是错误。
+    pub fn from_name(name: &str) -> Self {
+        let normalized = name.trim().to_ascii_lowercase().replace(['-', '_'], "");
+        match normalized.as_str() {
+            "code" => PromptVariant::Code,
+            "coding" => PromptVariant::Coding,
+            "design" => PromptVariant::Design,
+            _ => PromptVariant::Default,
+        }
+    }
+
+    /// 变体名的稳定小写形态（`"default"` / `"code"` / `"coding"` / `"design"`）。
+    pub fn name(self) -> &'static str {
+        match self {
+            PromptVariant::Default => "default",
+            PromptVariant::Code => "code",
+            PromptVariant::Coding => "coding",
+            PromptVariant::Design => "design",
+        }
+    }
+}
+
 /// 注入模板的变量集。全部由调用方提供（引擎不取时钟、不读环境、不做 IO）。
 ///
 /// 字段顺序即模板变量的分组顺序：产品 → 身份 → 环境 → 规则/风格 → 专家人格 →
@@ -278,20 +330,40 @@ pub enum Segment {
     If(Cond, Vec<Segment>),
 }
 
-/// 一个模式的模板：模式 + 段序列。
+/// 一个模板：模式 + 变体 + 段序列。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptTemplate {
     mode: PromptMode,
+    variant: PromptVariant,
     segments: Vec<Segment>,
 }
 
 impl PromptTemplate {
+    /// 构造**默认变体**的模板（签名不变 ⇒ 既有调用方零改动）。
     pub fn new(mode: PromptMode, segments: Vec<Segment>) -> Self {
-        Self { mode, segments }
+        Self::new_with_variant(mode, PromptVariant::Default, segments)
+    }
+
+    /// 构造带变体标记的模板（变体只作为**元数据**随模板携带）。
+    pub fn new_with_variant(
+        mode: PromptMode,
+        variant: PromptVariant,
+        segments: Vec<Segment>,
+    ) -> Self {
+        Self {
+            mode,
+            variant,
+            segments,
+        }
     }
 
     pub fn mode(&self) -> PromptMode {
         self.mode
+    }
+
+    /// 本模板的变体（回落后的**实际**变体，不是宿主传入的原始值）。
+    pub fn variant(&self) -> PromptVariant {
+        self.variant
     }
 
     pub fn segments(&self) -> &[Segment] {
@@ -302,95 +374,10 @@ impl PromptTemplate {
     ///
     /// 条件段（[`Segment::If`]）：条件成立才渲染其内层段；不成立则整段省略，
     /// 不留空洞标题、不留多余空行。
+    ///
+    /// 渲染管线在组装器（[`crate::compose`]）里：域模型只描述「段是什么」，
+    /// 「怎么拼成文本」属组装职责。
     pub fn render(&self, vars: &PromptVars) -> String {
-        let mut parts: Vec<String> = Vec::with_capacity(self.segments.len());
-        render_segments(&self.segments, vars, self.mode, &mut parts);
-        let mut out = parts.join("\n\n");
-        out.push('\n');
-        out
+        crate::compose::render_template(self, vars)
     }
-}
-
-/// 渲染一段段序列（含条件段的内层递归），把非空段追加到 `parts`。
-fn render_segments(
-    segments: &[Segment],
-    vars: &PromptVars,
-    mode: PromptMode,
-    parts: &mut Vec<String>,
-) {
-    for segment in segments {
-        match segment {
-            Segment::Text(text) => push_part(parts, Some(substitute(text, vars))),
-            Segment::Var(key) => push_part(parts, slot(key, vars)),
-            Segment::Gate => push_part(parts, trim(crate::template::PLAN_GATE)),
-            // 条件不成立 ⇒ 整段省略（与空值省略语义一致）。
-            Segment::If(cond, inner) => {
-                if cond.holds(vars, mode) {
-                    render_segments(inner, vars, mode, parts);
-                }
-            }
-        }
-    }
-}
-
-/// 追加一段：空段（纯空白）不进列表，避免留下空洞标题。
-fn push_part(parts: &mut Vec<String>, part: Option<String>) {
-    if let Some(part) = part {
-        if !part.trim().is_empty() {
-            parts.push(part);
-        }
-    }
-}
-
-/// 单遍替换 `{{key}}`：未知键与值中的花括号原样保留，不递归展开。
-fn substitute(text: &str, vars: &PromptVars) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        match after.find("}}") {
-            Some(end) => {
-                let key = &after[..end];
-                match vars.get(key) {
-                    Some(value) => out.push_str(value),
-                    // 未知键：原样保留花括号（内置模板不含未知键，注入值不再被替换）。
-                    None => {
-                        out.push_str("{{");
-                        out.push_str(key);
-                        out.push_str("}}");
-                    }
-                }
-                rest = &after[end + 2..];
-            }
-            None => {
-                out.push_str("{{");
-                rest = after;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// 槽位渲染：值非空（且非纯空白）时成段，否则整段省略，不留空洞标记。
-/// 六段可独立成节（人格设定 / 记忆四段 / 用户自定义规则）；
-/// 其余已知变量作为独立段时输出裸值；未知键省略。
-fn slot(key: &'static str, vars: &PromptVars) -> Option<String> {
-    let value = vars.get(key).and_then(trim)?;
-    match key {
-        "soul" => Some(format!("人格设定：\n{value}")),
-        "memory_identity" => Some(format!("## 身份\n{value}")),
-        "memory_user" => Some(format!("## 用户记忆\n{value}")),
-        "memory_project" => Some(format!("## 项目记忆\n{value}")),
-        "memory_daily" => Some(format!("## 当日日志\n{value}")),
-        "user_rules" => Some(format!("## 用户自定义规则\n{value}")),
-        _ => Some(value),
-    }
-}
-
-/// 去掉首尾空白；全空白视为空（返回 `None`）。
-fn trim(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
