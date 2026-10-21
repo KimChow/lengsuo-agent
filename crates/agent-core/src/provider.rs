@@ -9,6 +9,13 @@ use serde_json::Value;
 use crate::error::CoreError;
 use crate::schema::{Message, Mode};
 
+/// 会话 id 类型（`uuid::Uuid`）在此**转出**。
+///
+/// 理由：`Provider` trait 的方法签名带 `uuid::Uuid`，而适配层 crate
+/// （`agent-openai`）不直接依赖 `uuid`（依赖表属共享区，本卡不得改）——
+/// 经本模块转出，适配层只需依赖 `agent-core` 即可实现 trait。
+pub use uuid::Uuid;
+
 /// OpenAI 兼容的 token 用量。
 ///
 /// 字段名与 OpenAI Chat Completions 规范的 `usage` 对象一致，
