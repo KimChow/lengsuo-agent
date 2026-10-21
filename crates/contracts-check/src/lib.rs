@@ -670,3 +670,19 @@ pub const RUNTIME_EVENT_PAYLOAD_KEYS: &[&str] = &[
     "tsMs",
     "type",
 ];
+
+// ---- JSON-RPC 2.0 **基础信封键面**（真相来源：`agent-acp/src/message.rs`） ----
+/// 帧分类**判别键面**：`Message::from_value` 判别三分类时实际查的键名。
+pub const ACP_JSONRPC_DISCRIMINATION_KEYS: &[&str] = &["id", "method", "result", "error"];
+/// `JsonRpcRequest` 的线上键名面（wire 键名 = 字段名，该文件无 `serde(rename)`）。
+pub const ACP_JSONRPC_REQUEST_KEYS: &[&str] = &["jsonrpc", "id", "method", "params"];
+/// `JsonRpcNotification` 的线上键名面。
+pub const ACP_JSONRPC_NOTIFICATION_KEYS: &[&str] = &["jsonrpc", "method", "params"];
+/// `JsonRpcResponse` 的线上键名面。
+pub const ACP_JSONRPC_RESPONSE_KEYS: &[&str] = &["jsonrpc", "id", "result", "error"];
+/// `JsonRpcErrorObject`（JSON-RPC error 子对象）的线上键名面。
+pub const ACP_JSONRPC_ERROR_OBJECT_KEYS: &[&str] = &["code", "message", "data"];
+/// 网关 **u16 信封层**（`{code,msg,data}`）的线上键名面——与上面 error 子对象**同名不同形**。
+pub const GATEWAY_ENVELOPE_KEYS: &[&str] = &["code", "msg", "data"];
+/// `jsonrpc` 字段的线上取值（由 `JsonRpcVersion` 的自定义 `Deserialize` 硬保证）。
+pub const ACP_JSONRPC_VERSION: &str = "2.0";
