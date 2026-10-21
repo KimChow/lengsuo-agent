@@ -228,6 +228,61 @@ pub const ENVELOPE_CODES: &[u16] = &[
     502, // 额外：ACP 转发传输失败（rpc.rs:123）
 ];
 
+// ---- ACP wire 错误码面（`agent-acp` 的 JSON-RPC **负数**族） ----
+//
+// ⛔ 这是**另一套命名空间**，与上面的 [`ENVELOPE_CODES`]（网关信封层 `u16`）**不是**
+// 同一族、⛔ **不可混表**：
+// - 信封层码：**非负 u16**，出现在信封**顶层 `code`**（`{code, msg, data}`）；
+// - ACP wire 码：**负 i64**，只出现在 **`data.error.code`**。
+//
+// 两套码**会同时出现在同一个响应体里**：`crates/agent-gateway/src/rpc.rs` 的
+// `acp_forward()` 在「转发成功但对端回的是 ACP 错误」时，把对端的
+// `{"error":{…}}` 原样塞进信封的 `data` 字段，而信封**顶层 `code` 仍是 `0`**
+// （转发本身送达并拿到应答）。既有回归锚：
+// `crates/agent-gateway/tests/acp_forward_whitelist.rs`（断言 `resp["code"] == 0`
+// 且 `resp["data"]["error"]["code"] == -32601`）。
+//
+// ⚠️ **标准族与私有族是两层**（`crates/agent-acp/src/message.rs:61` 的注释：
+// 「错误码：标准族见 `JSONRPC_ERROR_*` 常量，**私有码原样保留**」）⇒ 登记成
+// **两个常量**，不合并成一族。
+//
+// 真相来源：`crates/agent-acp/src/{message,router,host_router}.rs` 的
+// `pub const …: i64` 字面量。断言：`tests/acp_error_surface.rs`（源码文本扫描，
+// 双向差集 + 两族不相交 + 族内去重 + 与信封层不串味，**只守关系、不锁数量**）。
+
+/// ACP **标准族** wire 错误码（JSON-RPC 2.0 标准区，当前 4 项）。
+///
+/// 真相来源：`crates/agent-acp/src/message.rs` 的四个 `JSONRPC_ERROR_*` 常量。
+///
+/// | 码 | 常量 | 来源 | 语义 |
+/// |---|---|---|---|
+/// | `-32700` | `JSONRPC_ERROR_PARSE` | `message.rs:71` | 解析失败 |
+/// | `-32601` | `JSONRPC_ERROR_METHOD_NOT_FOUND` | `message.rs:73` | 方法不存在（host 侧自动回，防对端悬挂） |
+/// | `-32600` | `JSONRPC_ERROR_INVALID_REQUEST` | `message.rs:75` | 无效请求 |
+/// | `-32602` | `JSONRPC_ERROR_INVALID_PARAMS` | `message.rs:77` | 参数无效（如 `initialize` 参数解析失败） |
+///
+/// ⚠️ **不锁数量**：实现正当新增一个标准码时，把新码登记进本常量即可；「恰好
+/// 4 项」之类的断言会在正当扩充时必红（教训：`tests/method_ledger.rs` 的
+/// `assert_eq!(ACP_METHODS.len(), 13)`）。
+pub const ACP_STANDARD_ERROR_CODES: &[i64] = &[-32700, -32601, -32600, -32602];
+
+/// ACP **私有族** wire 错误码（非标准区，当前 2 个**码值**）。
+///
+/// 真相来源：`crates/agent-acp/src/router.rs` 的两个私有码常量。
+///
+/// | 码 | 常量 | 来源 | 语义 |
+/// |---|---|---|---|
+/// | `-32000` | `ACP_ERROR_CONNECTION_CLOSED` | `router.rs:40` | 连接终止（撤下 pending） |
+/// | `-32001` | `ACP_ERROR_INTERNAL` | `router.rs:42` | 内部协议违例（如对端响应既无 result 也无 error） |
+///
+/// ⚠️ **按「码值」去重登记**：`router.rs:40` 的 `ACP_ERROR_CONNECTION_CLOSED` 与
+/// `host_router.rs:278` 的别名 `ACP_ERROR_HOST_CONNECTION_CLOSED` **同值**
+/// （`-32000`；别名写成 `= ACP_ERROR_CONNECTION_CLOSED;` 而非字面量）。本常量
+/// 登记的是**码值**、**不登记常量名** ⇒ `-32000` 只出现一次。
+///
+/// `router.rs:38` 的注释明写这是「非标准族，`-3260x` 之外的自定义区」。
+pub const ACP_PRIVATE_ERROR_CODES: &[i64] = &[-32000, -32001];
+
 /// `session:replay` 单页上限——`agent-core` 的 `DEFAULT_PAGE_LIMIT` 实际值。
 ///
 /// 真相来源：`crates/agent-core/src/event_log/mod.rs` 的
