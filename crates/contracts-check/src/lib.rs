@@ -331,6 +331,77 @@ pub const ACP_STANDARD_ERROR_CODES: &[i64] = &[-32700, -32601, -32600, -32602];
 /// `router.rs:38` 的注释明写这是「非标准族，`-3260x` 之外的自定义区」。
 pub const ACP_PRIVATE_ERROR_CODES: &[i64] = &[-32000, -32001];
 
+/// ACP **control 面**（`V.*` subtype）的 **wire 拼写面**——**可注册**的 11 个
+/// subtype 名。
+///
+/// # 真相来源
+///
+/// `crates/agent-acp/src/control.rs` 的 `enum ControlSubtype`（12 个变体：11 个
+/// 具名 + `Unknown`）与 `impl ControlSubtype::as_str()`（`control.rs:48-66`）里
+/// **手写**的 `match` 字面量。serde 侧另有 `#[serde(rename_all = "snake_case")]`
+/// （`control.rs:19`）——**变体名 ⇒ wire 名**的**自动**派生规则；本常量登记的是
+/// **手写拼写那一份**，两者由 `tests/acp_control_surface.rs` 的「serde 派生名
+/// == 手写拼写」断言钉在一起。
+///
+/// # 为什么它是**承重**的：它就是 **handler 路由键**
+///
+/// - 注册侧：`host_send.rs` 的 `on_control`（`:96-111`）用 `subtype.as_str()`
+///   作 **map 的键**插入 handler 表；
+/// - 分派侧：`host_router.rs` 的入站分派（`:171-185`）用**同一个** `as_str()`
+///   **查表**。
+///
+/// ⇒ **拼写写错 ⇒ 查表不命中 ⇒ 请求掉进事件队列**（`host_router.rs:183`）⇒ 不是
+/// 报错，而是**静默降级**：请求**永久悬挂**，除非上层自己 `respond_control` 兜底
+/// （`host_send.rs:113-122`「对未认领的 control 请求延后应答」）。
+///
+/// # 为什么**排除** `Unknown`（本常量里**没有** `"unknown"`）
+///
+/// `Unknown`（`control.rs:43-45`）是 `#[serde(other)]` 的兜底变体：解码遇到
+/// **未知/新增** subtype 时**保留原文**（它承载「原文」，不是某个固定拼写）。
+/// `as_str()` 对它的 `"unknown"` 是**占位串**（`control.rs:49`：「`Unknown` 无法
+/// 还原原文，返回占位串仅供日志」），**不是**任何真实 subtype 的 wire 名。
+///
+/// 且注册侧**明确拒绝**注册它：`host_send.rs:102-104`
+/// `if subtype == ControlSubtype::Unknown { return; }`（「注册它等于死代码」）⇒
+/// **`Unknown` 不属于「可注册 handler 的 wire 名面」**；混进清单会误导使用者去
+/// 注册一个**永不命中**的键。
+///
+/// # 命名空间（**与 [`ACP_METHODS`] 不是一套**）
+///
+/// | 面 | 拼写风格 | 例 |
+/// |---|---|---|
+/// | ACP method 面 | 斜杠 `域/动作` | `session/update` |
+/// | control subtype 面 | 下划线 `snake_case` | `session_update` |
+///
+/// 归一化后**同名**但**同层不同义** ⇒ **不可互换**。
+///
+/// # 断言口径（`tests/acp_control_surface.rs`，**只守关系、不锁数量/取值**）
+///
+/// 源码文本扫描 `control.rs`（`include_str!` **编译期**绑定；`agent-acp` 不是本
+/// crate 的依赖，`Cargo.toml` 属共享区、本卡不得改 ⇒ 只能扫文本、不能
+/// `use agent_acp::…`）断言：**实现面 ⊆ 登记面**、**登记面 ⊆ 实现面**、
+/// **serde 派生名 == 手写拼写**、**逐项锚点仍在**、**`Unknown` 被排除**、
+/// **与 method 面拼写风格不相交**。
+///
+/// ⚠️ **不锁数量/取值**：实现正当新增一个可注册 subtype 时，把新名字登记进本
+/// 常量即可；任何 `assert_eq!(ACP_CONTROL_SUBTYPES.len(), 11)` 之类的断言都会
+/// 在正当扩充时必红（教训：`tests/method_ledger.rs` 的
+/// `assert_eq!(ACP_METHODS.len(), 13)`）。
+pub const ACP_CONTROL_SUBTYPES: &[&str] = &[
+    "elicitation_create",         // control.rs:53 Self::ElicitationCreate
+    "elicitation_complete",       // control.rs:54 Self::ElicitationComplete
+    "session_request_permission", // control.rs:55 Self::SessionRequestPermission
+    "session_update",             // control.rs:56 Self::SessionUpdate
+    "fs_read_text_file",          // control.rs:57 Self::FsReadTextFile
+    "fs_write_text_file",         // control.rs:58 Self::FsWriteTextFile
+    "terminal_create",            // control.rs:59 Self::TerminalCreate
+    "terminal_kill",              // control.rs:60 Self::TerminalKill
+    "terminal_output",            // control.rs:61 Self::TerminalOutput
+    "terminal_release",           // control.rs:62 Self::TerminalRelease
+    "terminal_wait_for_exit",     // control.rs:63 Self::TerminalWaitForExit
+                                  // ⛔ 不登记 "unknown"：Unknown 不可注册（见本常量文档注释）。
+];
+
 /// `session:replay` 单页上限——`agent-core` 的 `DEFAULT_PAGE_LIMIT` 实际值。
 ///
 /// 真相来源：`crates/agent-core/src/event_log/mod.rs` 的
