@@ -55,7 +55,7 @@ impl Runtime {
         TurnContext {
             session_id: session.id,
             mode: session.mode,
-            system_prompt: self.with_skill_segments(session.id, system_prompt),
+            system_prompt: self.with_skill_segments(session, system_prompt),
             memory_digest: (!memory.digest.is_empty()).then_some(memory.digest),
             history: self.compacted_history(history),
             user_text: self.redact(user_text),
@@ -70,8 +70,9 @@ impl Runtime {
     /// 宿主已授权工具集决定）。
     ///
     /// 无注入段时逐字节返回宿主模板（零回归）。
-    fn with_skill_segments(&self, session_id: Uuid, template: String) -> String {
-        let segments = self.skill_segments(session_id);
+    fn with_skill_segments(&self, session: &Session, template: String) -> String {
+        self.ensure_skills_injected(session);
+        let segments = self.skill_segments(session.id);
         if segments.is_empty() {
             return template;
         }
@@ -81,6 +82,56 @@ impl Runtime {
             out.push_str(&segment);
         }
         out
+    }
+
+    /// 技能注入的生产接线（x-skill-inject-wire）：上下文构建时接入**已安装**
+    /// 技能（`HostServices.skills` 的可见目录，禁用面由 `list()` 收窄）。
+    ///
+    /// - **时机**：只在上下文构建时；每个技能每会话**只注入一次**——以 durable
+    ///   `skill_injected` 事件判重，后续构建（含同回合后续步）只回放不重注。
+    /// - **来源**：`InvocationSource::Model`。自动注入是宿主代模型装配上下文，
+    ///   因此 `disable-model-invocation: true` 的技能不会被自动注入（更严口径）。
+    /// - **P0**：`inject_skill` → `SkillCatalog::load()` 的审计门直接拒绝加载，
+    ///   本方法不绕过；正文不会进上下文。
+    /// - **拒绝不静默**：目录扫描越界或单技能被拒（P0/禁用/来源门）落
+    ///   `warning` 事件（`kind = skill_injection_rejected`），不阻断回合，
+    ///   其它技能照常注入。
+    fn ensure_skills_injected(&self, session: &Session) {
+        let Some(catalog) = self.host_services().skills.as_ref() else {
+            return;
+        };
+        let summaries = match catalog.list() {
+            Ok(summaries) => summaries,
+            Err(e) => {
+                // 目录级拒绝（如 symlink 越界）整次 fail-closed：显式记录，不静默。
+                let _ = self.emit(
+                    session,
+                    "warning",
+                    json!({
+                        "kind": "skill_injection_rejected",
+                        "reason": e.to_string(),
+                    }),
+                );
+                return;
+            }
+        };
+        let injected = self.injected_skill_names(session.id);
+        for summary in summaries {
+            if injected.contains(&summary.name) {
+                continue;
+            }
+            if let Err(e) = self.inject_skill(session.id, &summary.name, InvocationSource::Model) {
+                let _ = self.emit(
+                    session,
+                    "warning",
+                    json!({
+                        "kind": "skill_injection_rejected",
+                        "skill": summary.name,
+                        "reason": e.to_string(),
+                    }),
+                );
+            }
+        }
     }
 
     /// 历史进上下文的**主路径**：压缩边界 + 摘要。
