@@ -107,6 +107,19 @@ pub const ACP_FORWARDED_ACTIONS: &[&str] = &["sys:ping"]; // rpc.rs:43 `ACP_FORW
 /// 删掉即让该部署形态静默回落 `-32601`。
 pub const DUAL_PATH_ACTIONS: &[&str] = &["sys:ping"];
 
+/// **本地应答、禁入 ACP 转发白名单**的动作清单（台账 `acp-method-ledger.md` §5 裁定）。
+///
+/// 转发机制是「**请求-响应**」（`forward_action` 发 Rpc 请求帧、等响应帧配对），而
+/// 清单里这些动作的对端 ACP 方法是**通知、无响应**（`session/cancel`，见
+/// `agent-acp/src/methods.rs::method::SESSION_CANCEL`）——原样转发 ⇒ 对端永不应答
+/// ⇒ 本端超时 ⇒ 用户拿 `502 "acp forwarding failed"`，而取消实际已在对端发生。
+/// 次要理由：两侧会话 id 命名空间独立（本端 `Uuid` ↔ 对端 ACP 会话 id），无映射表。
+///
+/// ⇒ 裁定：`session:cancel` **保持本地实现**（fire-and-forget，立即回快照），**不得**
+/// 进 [`ACP_FORWARDED_ACTIONS`] / [`ACP_FORWARD_WHITELIST_SNAPSHOT`] / [`DUAL_PATH_ACTIONS`]。
+/// 断言：`tests/cancel_answer_surface.rs`（不相交 + 本地分支存在 + 对端「通知」锚点）。
+pub const LOCAL_ONLY_ANSWER_ACTIONS: &[&str] = &["session:cancel"];
+
 /// `rpc.rs::run()` 里 `match action`（131）本地实现覆盖的动作，源码扫描的比对基准；
 /// 与 [`ACTIONS`] **集合相等**（`tests/action_dispatch_surface.rs`）。
 pub const LOCAL_DISPATCH_ACTIONS: &[&str] = &[
