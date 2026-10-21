@@ -9,31 +9,33 @@
 //! 取回 [`RpcOutcome`] 并转成网关信封形状。**不做任何名字改写**——不发明
 //! 「`域:动作` ↔ `session/*`」映射表（那套命名未冻结，见 [`crate::rpc`] 的旁路说明）。
 //! 未在 host 注册过的动作走 ACP 的 `-32601 method not found` 语义，不 panic。
+//! 一条连接上**一次只等一条**转发应答，**超时即撤销在途** ⇒ 一次超时不会把该连接的转发能力永久废掉。
 //!
 //! **host 基线**：生产入口 [`AcpHostHandle::from_gateway_config`] 默认注册
-//! `initialize` / `logout`（见 [`agent_acp::host_baseline`]），外加网关转发探针
-//! `sys:ping`（[`agent_acp::host_baseline::register_ping`]）；[`AcpHostHandle::start`]
-//! 则按调用方传入的 [`HostConfig`] 原样起，**不做隐式注册**。
+//! `initialize` / `logout` 与转发探针 `sys:ping`；[`AcpHostHandle::start`] 则按调用方
+//! 传入的 [`HostConfig`] 原样起，**不做隐式注册**（见 [`agent_acp::host_baseline`]）。
 //!
 //! **仍未做的部分（诚实登记）**：
-//! - 传输仍是宿主注入的 [`Transport`]（测试/后续卡用 `mock_transport()` 或
-//!   `stdio::spawn_stdio` 后的对端），网关自己不 spawn 子进程、不自建管道；
-//!   真实形态（谁 spawn 谁）需用户决策，见模块尾注。
+//! - 传输仍是宿主注入的 [`Transport`]（测试用 `mock_transport()`），网关自己不
+//!   spawn 子进程、不自建管道；真实形态（谁 spawn 谁）需用户决策，见模块尾注。
 //!
 //! 形态对齐 [`crate::server::GatewayHandle`]：`Arc` 共享 + `Debug` 视图 +
 //! 显式 `stop`（`Drop` 亦自动拆除，`Host` 自身幂等）。
 
 use std::fmt;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_acp::control::TopLevel;
 use agent_acp::host::{Host, HostConfig, HostEvent, NextEvent};
 use agent_acp::host_baseline::{register_baseline, register_ping, BaselineConfig};
-use agent_acp::message::{JsonRpcRequest, Message, RequestId};
+use agent_acp::message::{
+    JsonRpcErrorObject, JsonRpcRequest, Message, RequestId, JSONRPC_ERROR_INVALID_REQUEST,
+    JSONRPC_ERROR_METHOD_NOT_FOUND,
+};
 use agent_acp::router::RpcOutcome;
-use agent_acp::transport::Transport;
+use agent_acp::transport::{FrameSink, FrameSource, SourceEvent, SourcePull, Transport};
 use agent_acp::ControlSubtype;
 use serde_json::{json, Value};
 
@@ -49,7 +51,7 @@ pub struct ForwardOutcome {
     /// 对端返回的 JSON-RPC `result`（成功时）。
     pub result: Option<Value>,
     /// 对端返回的 JSON-RPC `error` 对象（`-32601` 等；失败时）。
-    pub error: Option<agent_acp::message::JsonRpcErrorObject>,
+    pub error: Option<JsonRpcErrorObject>,
     /// 转成网关信封形状的载荷：成功即 `result` 本体，失败即 `{"error":{…}}`，
     /// 用于直接塞进 `code=0` 的 `data` 字段（`rpc.rs` 的旁路取其本体）。
     pub envelope: Value,
@@ -61,7 +63,7 @@ impl ForwardOutcome {
     pub fn is_method_not_found(&self) -> bool {
         self.error
             .as_ref()
-            .is_some_and(|e| e.code == agent_acp::message::JSONRPC_ERROR_METHOD_NOT_FOUND)
+            .is_some_and(|e| e.code == JSONRPC_ERROR_METHOD_NOT_FOUND)
     }
 
     /// 成功则取 `result` 本体；失败返回 `None`。
@@ -80,11 +82,11 @@ impl ForwardOutcome {
 pub struct AcpHostHandle {
     inner: Arc<Host>,
     /// 与接收线程共享的转发配对状态（发出请求 id ↔ 等应答）。
-    responder: Arc<std::sync::Mutex<Option<ResponsePair>>>,
+    responder: Arc<Mutex<Option<ResponsePair>>>,
     /// 转发请求的写侧：与 host 共用同一条帧汇（server 注入的 sink 自带写锁）。
-    sink: Arc<std::sync::Mutex<Box<dyn agent_acp::transport::FrameSink>>>,
+    sink: Arc<Mutex<Box<dyn FrameSink>>>,
     /// 转发应答接收端（接收线程投递；`forward_action` 取用）。
-    response_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<RpcOutcome>>>,
+    response_rx: Arc<Mutex<std::sync::mpsc::Receiver<RpcOutcome>>>,
     /// 转发请求 id 的单调计数器（与 `Host::next_id` 分开，避免两处编号混用）。
     next_forward_id: Arc<AtomicI64>,
 }
@@ -110,10 +112,10 @@ impl ResponsePair {
 /// host 侧写侧的共享包装：与 [`AcpHostHandle`] 的转发写侧指向同一帧汇，
 /// 写锁由帧汇自身的 `Mutex` 提供（锁覆盖编码+写，帧字节序即写序）。
 struct HostSink {
-    sink: Arc<std::sync::Mutex<Box<dyn agent_acp::transport::FrameSink>>>,
+    sink: Arc<Mutex<Box<dyn FrameSink>>>,
 }
 
-impl agent_acp::transport::FrameSink for HostSink {
+impl FrameSink for HostSink {
     fn send_frame(&mut self, frame: &[u8]) -> agent_acp::Result<()> {
         self.sink
             .lock()
@@ -132,9 +134,9 @@ impl agent_acp::transport::FrameSink for HostSink {
 /// 响应必须由本端自己认领；而 host 分派线程必须先拿到 `-32601` 才能替未注册
 /// 方法应答，故非转发帧仍要走 host 方法表。
 fn spawn_receiver(
-    mut source: Box<dyn agent_acp::transport::FrameSource>,
-    events_tx: std::sync::mpsc::Sender<agent_acp::transport::SourceEvent>,
-    responder: Arc<std::sync::Mutex<Option<ResponsePair>>>,
+    mut source: Box<dyn FrameSource>,
+    events_tx: std::sync::mpsc::Sender<SourceEvent>,
+    responder: Arc<Mutex<Option<ResponsePair>>>,
     inner: Arc<Host>,
 ) {
     let _ = std::thread::Builder::new()
@@ -142,15 +144,12 @@ fn spawn_receiver(
         .spawn(move || {
             while !inner.is_closed() {
                 let ev = match source.next_event(FORWARD_TIMEOUT) {
-                    agent_acp::transport::SourcePull::Timeout => continue,
-                    agent_acp::transport::SourcePull::Event(ev) => ev,
+                    SourcePull::Timeout => continue,
+                    SourcePull::Event(ev) => ev,
                 };
                 // 只截本端发起的请求的响应；其余（请求/通知/control/畸形/终止）
                 // 原样转投 host 方法表与事件队列。
-                let agent_acp::transport::SourceEvent::Frame(TopLevel::Rpc(Message::Response(
-                    resp,
-                ))) = &ev
-                else {
+                let SourceEvent::Frame(TopLevel::Rpc(Message::Response(resp))) = &ev else {
                     if events_tx.send(ev).is_err() {
                         break;
                     }
@@ -159,8 +158,8 @@ fn spawn_receiver(
                 let outcome = match (&resp.error, &resp.result) {
                     (Some(e), _) => RpcOutcome::Err(e.clone()),
                     (None, Some(r)) => RpcOutcome::Ok(r.clone()),
-                    (None, None) => RpcOutcome::Err(agent_acp::message::JsonRpcErrorObject {
-                        code: agent_acp::message::JSONRPC_ERROR_INVALID_REQUEST,
+                    (None, None) => RpcOutcome::Err(JsonRpcErrorObject {
+                        code: JSONRPC_ERROR_INVALID_REQUEST,
                         message: "响应既无 result 也无 error".into(),
                         data: None,
                     }),
@@ -175,17 +174,11 @@ fn spawn_receiver(
                         _ => None,
                     }
                 };
-                match claim {
-                    Some(tx) => {
-                        let _ = tx.send(outcome);
-                    }
-                    // 非本端转发请求的响应：host 不发起请求，故是对端错帧/迟到帧，
-                    // 交回 host 计数并可观测（原语义不丢）。
-                    None => {
-                        if events_tx.send(ev).is_err() {
-                            break;
-                        }
-                    }
+                // 非本端转发请求的响应（对端错帧/迟到帧）：交回 host 计数并可观测（原语义不丢）。
+                if let Some(tx) = claim {
+                    let _ = tx.send(outcome);
+                } else if events_tx.send(ev).is_err() {
+                    break;
                 }
             }
         });
@@ -215,8 +208,7 @@ impl AcpHostHandle {
         let (response_tx, response_rx) = std::sync::mpsc::channel::<RpcOutcome>();
         // 帧汇由本端与 host 共享（server 注入的 sink 自带写锁）；本端持一份
         // 供转发写出，另一份随传输交给 host。
-        let shared_sink: Arc<std::sync::Mutex<Box<dyn agent_acp::transport::FrameSink>>> =
-            Arc::new(std::sync::Mutex::new(transport.sink));
+        let shared_sink: Arc<Mutex<Box<dyn FrameSink>>> = Arc::new(Mutex::new(transport.sink));
         let inner = Arc::new(Host::with_config(
             Transport::with_teardown(
                 Box::new(HostSink {
@@ -227,7 +219,7 @@ impl AcpHostHandle {
             ),
             config,
         ));
-        let responder = Arc::new(std::sync::Mutex::new(Some(ResponsePair::new(response_tx))));
+        let responder = Arc::new(Mutex::new(Some(ResponsePair::new(response_tx))));
         spawn_receiver(
             transport.source,
             events_tx,
@@ -252,8 +244,8 @@ impl AcpHostHandle {
     /// `logout`，协议版本取 [`BaselineConfig::default`]），并为白名单成员 `sys:ping`
     /// 注册应答实现（[`register_ping`]，回本进程 pid）——白名单开了这个动作，
     /// 网关自己的 host 就必须答得上，否则转发必然 `-32601`。`start` 接受调用方显式
-    /// 传入的 [`HostConfig`]，语义是「按调用方要求原样起」，因此**不加任何隐式注册**
-    /// （未注册方法仍回 `-32601`）。理由见 `docs/contracts/acp-host.md` §8.4。
+    /// 传入的 [`HostConfig`]，因此**不加任何隐式注册**。理由见
+    /// `docs/contracts/acp-host.md` §8.4。
     #[must_use]
     pub fn from_gateway_config(_config: &GatewayConfig, transport: Transport) -> Self {
         let handle = Self::start(transport, HostConfig::default());
@@ -296,12 +288,11 @@ impl AcpHostHandle {
     /// - **不发明映射表**：不做任何名字改写，v0 动作名即 ACP method 名；
     /// - **未注册动作**走 ACP 的 `-32601 method not found`（host 侧自动应答），
     ///   **不 panic、不静默丢弃**；调用方据 [`ForwardOutcome::is_method_not_found`] 判定；
-    /// - 请求 id 由本端单调编号（转发用独立计数器），响应按 id 配对——host 侧
-    ///   不发请求，故这条等待由本端接收线程认领（见 [`AcpHostHandle::start`]）。
+    /// - 请求 id 由本端单调编号（转发用独立计数器），响应按 id 配对（host 侧不发请求）。
     ///
     /// # Errors
     /// - `pending`：同一条连接上已有转发在途（本端一次只等一条，避免响应错配）；
-    /// - `transport`：连接已终止、写侧失败或对端在 [`FORWARD_TIMEOUT`] 内未回。
+    /// - `transport`：连接已终止、写侧失败或对端在 [`FORWARD_TIMEOUT`] 内未回（超时即撤销在途）。
     ///
     /// [`ForwardOutcome::is_method_not_found`]: ForwardOutcome::is_method_not_found
     pub fn forward_action(
@@ -328,10 +319,7 @@ impl AcpHostHandle {
         let wrote = self.write_frame(&frame);
         if let Err(e) = wrote {
             // 写失败即撤销在途，避免后续转发被永久挡住。
-            let mut guard = self.responder.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(pair) = guard.as_mut() {
-                pair.pending = None;
-            }
+            self.cancel_pending();
             return Err(e);
         }
         let outcome = self
@@ -339,8 +327,12 @@ impl AcpHostHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .recv_timeout(FORWARD_TIMEOUT)
-            .map_err(|_| agent_acp::Error::Transport {
-                reason: "ACP 对端未在超时内应答转发请求".into(),
+            .map_err(|_| {
+                // 超时即撤销在途：否则本条转发永远占着槽位，后续转发会被「已有转发在途」一律拒掉。
+                self.cancel_pending();
+                agent_acp::Error::Transport {
+                    reason: "ACP 对端未在超时内应答转发请求".into(),
+                }
             })?;
         Ok(ForwardOutcome {
             envelope: match &outcome {
@@ -361,6 +353,15 @@ impl AcpHostHandle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .send_frame(frame)
+    }
+
+    /// 撤销在途转发：清掉本请求占用的槽位（写帧失败 / 等应答超时都用它）。清槽后
+    /// **迟到的应答配不上任何在途 id** ⇒ 交回 host 计数并入队（可观测、不静默吞掉）。
+    fn cancel_pending(&self) {
+        let mut guard = self.responder.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(pair) = guard.as_mut() {
+            pair.pending = None;
+        }
     }
 
     /// 阻塞取下一个 host 事件（超时归 [`NextEvent::Idle`]）。
@@ -384,8 +385,7 @@ impl AcpHostHandle {
     ///
     /// 注意：`Host::stop` 需 `&mut self`，而句柄是共享的——故拆除按
     /// 「丢弃句柄」执行（`Arc` 计数归零时 `Host::drop` → `stop`）。丢弃句柄后
-    /// 转发配对状态一并清空：在途转发由 [`FORWARD_TIMEOUT`] 兜底返回传输错，
-    /// 不会永久悬挂。
+    /// 转发配对状态一并清空：在途转发由 [`FORWARD_TIMEOUT`] 兜底返回传输错，且**超时即撤销在途**。
     pub fn stop(&mut self) {
         *self.responder.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
