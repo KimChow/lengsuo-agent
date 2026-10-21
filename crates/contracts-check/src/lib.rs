@@ -76,6 +76,54 @@ pub const ACP_METHODS: &[&str] = &[
     "elicitation/complete",       // agent-acp method::ELICITATION_COMPLETE
 ];
 
+/// ACP **通知方法面**（单向、无响应）——[`ACP_METHODS`] 的**子集**。
+///
+/// ACP 方法分两种**帧形状**（JSON-RPC 2.0）：**请求-响应**
+/// （`Message::Request`，发出去必须配一个 `Response` 回来）与**通知**
+/// （`Message::Notification`，发出去**永不配响应**，对端不应答）。本常量
+/// 登记的是**第二种**。真相来源是 `agent-acp` 的 `method` 模块里**常量行
+/// 上一行的 `///` 文档注释**带「（通知）」的那几项：
+///
+/// | 方法 | 常量 | 常量行 | 「（通知）」散文锚点 |
+/// |---|---|---|---|
+/// | `session/cancel` | `method::SESSION_CANCEL` | `methods.rs:368` | `methods.rs:367` |
+/// | `session/update` | `method::SESSION_UPDATE` | `methods.rs:370` | `methods.rs:369` |
+///
+/// # 为什么必须结构化登记（此前只有散文）
+///
+/// 「通知」这个语义属性此前**只由三个汉字承载**（`（通知）`）：实现侧
+/// `grep -rn "NOTIFICATION\|NOTIFY" crates/agent-acp/src/methods.rs` 零命中
+/// （没有通知族清单常量），契约侧 [`ACP_METHODS`] 里那两行也只是**行尾散文
+/// 注释**。散文被改写/挪位/重排就**静默丢失**，没有任何机器可判定的断言。
+///
+/// # 为什么它是**承重**语义
+///
+/// 网关的 ACP 转发机制是**请求-响应**（`crates/agent-gateway/src/acp.rs` 的
+/// `forward_action` 发 Rpc 请求帧、按 id 等响应帧配对）。把**通知**方法投进
+/// 那条路径 ⇒ 对端永不应答 ⇒ 本端等到超时 ⇒ 用户拿 `502 "acp forwarding
+/// failed"`，而操作**实际已在对端发生** ⇒ **必然的错误行为**。
+/// `session:cancel` 的终局裁定（台账 `docs/contracts/acp-method-ledger.md` §5）
+/// 正是基于这条推理。
+///
+/// # 断言口径（`tests/acp_notification_surface.rs`，**只守关系、不锁数量**）
+///
+/// 源码文本扫描 `methods.rs`（常量行**上一行**的 `///` 注释含「通知」⇒ 视为
+/// 通知方法）断言：**实现面 ⊆ 登记面**、**登记面 ⊆ 实现面**、**通知族 ⊆
+/// [`ACP_METHODS`]**、**通知族 ∩ [`ACP_FORWARDED_ACTIONS`] == ∅**、**通知族 ∩
+/// [`ACP_FORWARD_WHITELIST_SNAPSHOT`] == ∅**（通知方法**不得**进转发面）、
+/// **逐项锚点仍在**。
+///
+/// ⚠️ **不锁数量/取值**：下一张卡正当新增一个通知方法时，把新方法登记进本
+/// 常量即可；任何 `assert_eq!(ACP_NOTIFICATION_METHODS.len(), 2)` 之类的断言
+/// 都会在正当扩充时必红（教训：`tests/method_ledger.rs` 的
+/// `assert_eq!(ACP_METHODS.len(), 13)`）。
+pub const ACP_NOTIFICATION_METHODS: &[&str] = &[
+    // agent-acp method::SESSION_CANCEL（methods.rs:368；「（通知）」锚点 methods.rs:367）
+    "session/cancel",
+    // agent-acp method::SESSION_UPDATE（methods.rs:370；「（通知）」锚点 methods.rs:369）
+    "session/update",
+];
+
 /// 网关 ACP 转发白名单的**当前快照**（本卡：**快照**，**非不变量**）。
 ///
 /// 真相来源：`crates/agent-gateway/src/rpc.rs::ACP_FORWARD_ACTIONS`，本卡取值
