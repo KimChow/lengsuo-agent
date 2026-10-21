@@ -108,10 +108,13 @@ fn user_rules_appended_when_non_empty() {
         out.contains("## 用户自定义规则\nRULE-回复不超过三行"),
         "缺用户规则段"
     );
-    // 追加在最后（硬规则之后）
+    // 规格 §12 第 8 项：用户规则在硬规则之前，硬规则固定为最后一段。
     let hard_at = out.find("## 硬规则").unwrap();
     let rules_at = out.find("## 用户自定义规则").unwrap();
-    assert!(rules_at > hard_at, "用户规则应在硬规则之后追加");
+    assert!(
+        rules_at < hard_at,
+        "用户规则应在硬规则之前（规格 §12 第 8 项）"
+    );
 }
 
 #[test]
