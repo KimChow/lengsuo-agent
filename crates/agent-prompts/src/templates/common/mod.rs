@@ -26,6 +26,7 @@
 pub(super) mod delivery;
 pub(super) mod modes;
 pub(super) mod policy;
+pub(super) mod product;
 pub(super) mod tooling;
 
 pub(in crate::templates) use tooling::{if_filled, owned, text, when};
@@ -37,7 +38,7 @@ use crate::model::{Cond, PromptMode, Segment};
 /// 段序 = 07 §3.1 的第 2–6 项：内容政策 → 个人目录安全 → Windows 命令安全
 /// （`is_windows` 条件段）→ 区域惯例 → 工作模式。
 pub(super) fn public_layer() -> Vec<Segment> {
-    let mut segments = vec![
+    vec![
         // 07 §3.1 第 2 项 <content_policy>：18 §10.1 七条。
         text(policy::CONTENT_POLICY),
         // 07 §3.1 第 3 项 <personal_files_safety>：18 §10.2 八条（ALL mandatory）。
@@ -51,11 +52,7 @@ pub(super) fn public_layer() -> Vec<Segment> {
         text(policy::REGIONAL_CONVENTIONS),
         // 07 §3.1 第 6 项 <working_modes>：05 §2 模式矩阵。
         text(modes::WORKING_MODES),
-    ];
-    // 18 §13 组装位 <tone_and_style>（风格层）：空值整段省略。
-    // 段序重排归组装顺序卡；本卡只保证「在场且在公共层」。
-    segments.extend(tone_style_segment());
-    segments
+    ]
 }
 
 /// `<tone_and_style>` 条件段：`tone_style` 非空才渲染。
@@ -102,30 +99,64 @@ pub(in crate::templates) fn ask_capability() -> Segment {
 
 /// 公共头。
 ///
-/// 【出处：参考端 本地对照资料 07 §5 身份/环境变量组；记忆四段见 04 §2.3（注入点）
-/// + 07 §5（条件段：三变量任一非空才渲染整段）】。
+/// 【出处：参考端 本地对照资料 07 §5 身份/环境变量组】。
 ///
 /// 每个模式带自己的标题行，使不同模式的输出必然不同。
 /// `## 身份` 段同时承载 `<user_info>`（07 §3.1 第 16 项：`user_name`）。
-/// 记忆四段按 身份 → 用户 → 项目 → 当日 顺序独立成段，空段整段省略。
+/// 记忆四段已移入 [`footer`]（A7 段序：公共层与行为段之后、身份段之前），
+/// 本函数只保留标题 / 身份 / soul / 环境。
 pub(super) fn header(mode: PromptMode) -> Vec<Segment> {
     vec![
         owned(format!("# 系统提示词 · 模式：{}", mode.as_str())),
         text("## 身份\n你是 {{ai_name}}（Lengsuo 智能体工作平台的执行助手）。本次服务对象：{{user_name}}。"),
         Segment::Var("soul"),
         text("## 环境\n- 日期：{{date}}\n- 工作区：{{workspace}}"),
+    ]
+}
+
+/// 身份层：`<identity_context>` 的两分支条件段（见 [`super::identity`]）。
+///
+/// 只做挂载，不改身份段自身的渲染与空值语义。
+pub(super) fn identity_layer() -> Vec<Segment> {
+    super::identity::identity_segments()
+}
+
+/// 公共尾（A7 段序 5–10）：
+/// 记忆四段 → 身份段 → 风格层 → 用户自定义规则 → 产品身份 → 硬规则。
+///
+/// 记忆四段按 身份 → 用户 → 项目 → 当日 顺序独立成段，空段整段省略。
+/// 用户规则与产品身份都是空值整段省略的条件段。
+/// 硬规则独立成段且固定为最后一段（规格 §15 第 3 条偏离，PROMPTS-SPEC 冻结项）。
+pub(super) fn footer() -> Vec<Segment> {
+    let mut segments = vec![
         Segment::Var("memory_identity"),
         Segment::Var("memory_user"),
         Segment::Var("memory_project"),
         Segment::Var("memory_daily"),
-    ]
+    ];
+    segments.extend(identity_layer());
+    // 18 §13 组装位 <tone_and_style>（风格层）：空值整段省略。
+    segments.extend(tone_style_segment());
+    // <user_custom_instructions>：规格 §12 第 9 项要求正文含「除非与安全规则冲突
+    // 必须遵守」。占位符紧随标题（不插空行），渲染后与既有单遍替换逐字衔接。
+    segments.push(if_filled(
+        &["user_rules"],
+        vec![owned(
+            "## 用户自定义规则\n{{user_rules}}\n（除非与安全规则冲突必须遵守。）".to_string(),
+        )],
+    ));
+    // <product_identity>：规格 §12 第 10 项；本仓变量名为 `product_name`。
+    segments.push(if_filled(
+        &["product_name"],
+        vec![text(product::PRODUCT_IDENTITY)],
+    ));
+    segments.push(text(HARD_RULES));
+    segments
 }
 
-/// 公共尾：硬规则，以及非空时追加的「用户自定义规则」段。
-///
-/// 硬规则独立成段是规格 §15 第 3 条偏离（PROMPTS-SPEC 冻结的跨模式不变量）。
-pub(super) fn footer() -> Vec<Segment> {
-    vec![text(HARD_RULES), Segment::Var("user_rules")]
+/// 公共尾段数（供 `expert.rs` 切分尾部用；改 [`footer`] 时同步改这里）。
+pub(super) fn footer_len() -> usize {
+    footer().len()
 }
 
 /// 硬规则（全模式）：第一条为冻结要点，其余为同义收紧，不放宽能力面。

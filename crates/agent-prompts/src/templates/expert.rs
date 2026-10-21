@@ -42,7 +42,9 @@ pub(crate) fn expert_segments(mode: PromptMode) -> Vec<Segment> {
         "expert 人格槽位置失效：能力段不在 header 之后一格"
     );
     segments.insert(at, persona_slot());
-    let tail = segments.split_off(segments.len() - 2);
+    // 公共尾段数由 `footer()` 动态给出（A7 段序后尾部为 6 类段），
+    // 硬编码段数会在 footer 变更时把协作段插进公共层中间。
+    let tail = segments.split_off(segments.len() - super::common::footer_len());
     // 既有通用注入点（h3 卡接线，语义不动）：21 §5「人格是纯变量注入点」⇒
     // 变量非空才渲染。
     segments.push(if_filled(
