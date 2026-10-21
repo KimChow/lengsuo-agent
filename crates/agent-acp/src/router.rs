@@ -77,6 +77,8 @@ pub(crate) struct RouteState {
     pub dropped_events: AtomicU64,
     pub bad_frames: AtomicU64,
     pub unknown_ids: AtomicU64,
+    /// 在途槽位被同 id 的后续请求覆盖的次数（覆盖允许，但必须可观测）。
+    pub pending_overwrites: AtomicU64,
     pub poll_interval: Duration,
 }
 
@@ -91,6 +93,10 @@ impl std::fmt::Debug for RouteState {
             )
             .field("bad_frames", &self.bad_frames.load(Ordering::Acquire))
             .field("unknown_ids", &self.unknown_ids.load(Ordering::Acquire))
+            .field(
+                "pending_overwrites",
+                &self.pending_overwrites.load(Ordering::Acquire),
+            )
             .finish()
     }
 }
@@ -112,6 +118,7 @@ impl RouteState {
             dropped_events: AtomicU64::new(0),
             bad_frames: AtomicU64::new(0),
             unknown_ids: AtomicU64::new(0),
+            pending_overwrites: AtomicU64::new(0),
             poll_interval,
         }
     }
@@ -154,15 +161,48 @@ impl RouteState {
     }
 
     /// 注册等待回执的通道。
+    ///
+    /// 同 id 重复注册 = **覆盖**旧槽位（与 host 侧同名 handler 覆盖语义一致，
+    /// 覆盖是允许的，不在此处拒绝）。但覆盖必须**可观测**：覆盖发生时
+    /// [`Self::pending_overwrites`] 自增，旧持有方的回执通道随之断开
+    /// （`Disconnected`，而非「超时」）。
     pub fn register(&self, control: bool, id: RequestId) -> Receiver<RpcOutcome> {
         let (tx, rx) = std::sync::mpsc::channel();
-        self.pending_map(control).insert(id, tx);
+        if self.pending_map(control).insert(id, tx).is_some() {
+            self.pending_overwrites.fetch_add(1, Ordering::AcqRel);
+        }
         rx
     }
 
     /// 撤销一个 pending（发送超时后的清理；返回是否确实存在）。
     pub fn cancel_pending(&self, control: bool, id: &RequestId) -> bool {
         self.pending_map(control).remove(id).is_some()
+    }
+
+    /// 在途槽位被同 id 后续请求顶掉时，旧请求方拿到的错误。
+    ///
+    /// 说真话：这是「回执通道被顶掉」，**不是**「对端没回」——两者必须可区分
+    /// （静默把两者合并成「超时」会让 id 撞车变成不可观测的失败）。调用方
+    /// **不得**在这里再撤销 pending：表里那个同 id 槽位属于别人，撤了会连带
+    /// 把对方的回执也毁掉。
+    pub fn overwritten_error(&self, id: &RequestId) -> Error {
+        Error::Transport {
+            reason: format!(
+                "请求 {} 的回执通道已断开（槽位被同 id 的后续请求顶掉或已被撤销）",
+                id.display()
+            ),
+        }
+    }
+
+    /// 在途槽位等满时限仍无回执时，调用方拿到的错误（真超时）。
+    pub fn timeout_error(&self, id: &RequestId, timeout: Duration) -> Error {
+        Error::Transport {
+            reason: format!(
+                "请求 {} 等待响应超时（{}ms）",
+                id.display(),
+                timeout.as_millis()
+            ),
+        }
     }
 
     /// 完成一个 pending；未知 id 计数并丢弃（不 panic）。

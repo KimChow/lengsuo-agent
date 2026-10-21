@@ -11,7 +11,7 @@
 //!   拆除钩子（stdio 形态里 kill+reap）`。Drop 自动执行，幂等。
 
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -53,20 +53,19 @@ impl RequestHandle {
     /// 有界等待响应。
     ///
     /// # Errors
-    /// [`Error::Transport`]：超时（并撤销 pending，后续迟到的响应按未知 id 计数）。
+    /// [`Error::Transport`]：超时（并撤销 pending，后续迟到的响应按未知 id 计数）；
+    /// 或回执通道已断开（槽位被同 id 的后续请求顶掉／已被撤销）——后者**不说
+    /// “超时”**，避免把「id 被抢」谎报成「对端没回」（两类错误的文案见
+    /// [`crate::router::RouteState::timeout_error`] 与
+    /// [`crate::router::RouteState::overwritten_error`]）。
     pub fn wait_timeout(self, timeout: Duration) -> crate::Result<RpcOutcome> {
         match self.rx.recv_timeout(timeout) {
             Ok(outcome) => Ok(outcome),
-            Err(_) => {
+            Err(RecvTimeoutError::Timeout) => {
                 self.state.cancel_pending(self.control, &self.id);
-                Err(Error::Transport {
-                    reason: format!(
-                        "请求 {} 等待响应超时（{}ms）",
-                        self.id.display(),
-                        timeout.as_millis()
-                    ),
-                })
+                Err(self.state.timeout_error(&self.id, timeout))
             }
+            Err(RecvTimeoutError::Disconnected) => Err(self.state.overwritten_error(&self.id)),
         }
     }
 
@@ -358,6 +357,15 @@ impl Client {
     #[must_use]
     pub fn unknown_id_count(&self) -> u64 {
         self.state.unknown_ids.load(Ordering::Acquire)
+    }
+
+    /// 在途槽位被同 id 后续请求覆盖的次数（RPC 面与 control 面合计）。
+    ///
+    /// 覆盖**是允许的**（同 host 侧同名 handler 覆盖语义），本计数只做可观测：
+    /// 非 0 即表示有请求方的回执通道被顶掉。与 [`Self::unknown_id_count`] 互不串扰。
+    #[must_use]
+    pub fn pending_overwrite_count(&self) -> u64 {
+        self.state.pending_overwrites.load(Ordering::Acquire)
     }
 
     /// 主动拆除：停路由线程 → 关写侧 → 执行传输拆除钩子（一次）。幂等。
