@@ -20,6 +20,8 @@ pub mod tool_fs;
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde_json::json;
 use tempfile::TempDir;
@@ -54,6 +56,22 @@ fn workspace() -> (TempDir, FsToolExecutor) {
     let dir = TempDir::new().expect("临时目录");
     let exec = FsToolExecutor::new(dir.path());
     (dir, exec)
+}
+
+/// 把回收站重定向到临时目录（freedesktop 布局：`<XDG_DATA_HOME>/Trash/{files,info}`）。
+///
+/// `trash` 的 freedesktop 实现在**删除时**才读 `XDG_DATA_HOME`（见 trash 5 的
+/// `home_trash()`），因此进程内单点设置即可生效 ⇒ 删除用例不会把文件丢进
+/// 开发机真实的 `~/.local/share/Trash`。
+///
+/// 与 `crates/agent-tools/tests/support/mod.rs` 同一手法（那边是既有实现）。
+fn isolated_trash_home() -> &'static Path {
+    static TRASH: OnceLock<PathBuf> = OnceLock::new();
+    TRASH.get_or_init(|| {
+        let dir = TempDir::new().expect("创建回收站临时目录失败").keep();
+        std::env::set_var("XDG_DATA_HOME", &dir);
+        dir
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -257,9 +275,34 @@ fn fs_delete_删除文件后工作区内不再存在() {
     let (dir, exec) = workspace();
     fs::write(dir.path().join("d.txt"), "x").expect("写临时文件");
 
+    // 先触发回收站隔离（必须在删除之前设置 XDG_DATA_HOME）。
+    let trash = isolated_trash_home().join("Trash/files");
+    fs::create_dir_all(&trash).expect("创建回收站 files 目录失败");
+
     exec.dispatch("fs.delete", &json!({"path": "d.txt"}))
         .expect("删除应成功");
     assert!(!dir.path().join("d.txt").exists());
+    // 删除是「移入回收站」而非抹除 ⇒ 回收站里应留有原名条目。
+    assert!(
+        trash
+            .read_dir()
+            .expect("读回收站")
+            .flatten()
+            .any(|e| { e.file_name().to_string_lossy() == "d.txt" }),
+        "回收站 files/ 应保留原名条目，实际目录 {trash:?}"
+    );
+}
+
+/// 删除工作区根目录必须被拒（避免一次调用清掉整个工作区）。
+#[test]
+fn fs_delete_删除工作区根被拒() {
+    let (dir, exec) = workspace();
+    isolated_trash_home();
+    let err = exec
+        .dispatch("fs.delete", &json!({"path": "."}))
+        .expect_err("删除工作区根必须被拒");
+    assert!(err.contains("越权"), "错误文本应说明越权被拒: {err}");
+    assert!(dir.path().exists(), "工作区根不得被删");
 }
 
 // ---------------------------------------------------------------------------
