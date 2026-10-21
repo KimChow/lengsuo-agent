@@ -103,10 +103,8 @@ impl Runtime {
         use agent_memory::{MemoryEngine, MemoryPaths};
         let enabled = self.config.lock().expect("配置锁不得毒化").memory_enabled;
         let session = self.get_session(id)?;
-        let engine = MemoryEngine::new(
-            MemoryPaths::new(self.workdir.join(".lengsuo"), &session.workspace_root),
-            enabled,
-        );
+        let paths = MemoryPaths::new(self.workdir.join(".lengsuo"), &session.workspace_root);
+        let engine = MemoryEngine::new(paths.clone(), enabled);
         let arg = |key: &str| -> Result<String, CoreError> {
             args.get(key)
                 .and_then(Value::as_str)
@@ -138,6 +136,30 @@ impl Runtime {
             "identity.set_soul" => {
                 engine.set_soul(&arg("text")?)?;
                 "soul"
+            }
+            // 检索三工具只读：直接返回后端响应，不写 memory_update 事件。
+            "memory.list" => {
+                let request =
+                    crate::tool::parse_memory_list_args(args).map_err(CoreError::InvalidConfig)?;
+                return Ok(serde_json::to_value(agent_memory::list::list(
+                    &paths, request,
+                )?)?);
+            }
+            "memory.search" => {
+                let mut request = crate::tool::parse_memory_search_args(args)
+                    .map_err(CoreError::InvalidConfig)?;
+                // 与写路径同口径：查询串可能含凭据，先脱敏再检索（D5）。
+                request.queries = request.queries.iter().map(|q| self.redact(q)).collect();
+                return Ok(serde_json::to_value(agent_memory::search::search(
+                    &paths, request,
+                )?)?);
+            }
+            "memory.read" => {
+                let request =
+                    crate::tool::parse_memory_read_args(args).map_err(CoreError::InvalidConfig)?;
+                return Ok(serde_json::to_value(agent_memory::read::read(
+                    &paths, request,
+                )?)?);
             }
             other => return Err(CoreError::InvalidConfig(format!("未知记忆工具: {other}"))),
         };
