@@ -11,6 +11,8 @@
 //! 会话 id 由宿主在调用时绑定（与 `TaskToolExecutor::for_session` 同源），
 //! 不从工具参数读取——模型无法伪造会话归属。
 
+use std::sync::Arc;
+
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -37,4 +39,28 @@ pub fn execute(rt: &Runtime, session: Uuid, name: &str, args: &Value) -> Result<
     let executor = TaskToolExecutor::for_session(session);
     rt.with_task_runtime(|| executor.execute(name, args))
         .map_err(|e| e.to_string())?
+}
+
+/// `task.*` 的**可绑定**执行体：汇总卡把它装进
+/// [`DispatchToolExecutor`](crate::executor::DispatchToolExecutor) 的 `task.` 前缀槽。
+///
+/// 与 [`execute`] 同源（同一个 `TaskToolExecutor` + 同一个语境栈），差别只在
+/// 形状：trait 的 `execute` 签名里**没有会话 id**，故会话在构造时绑定
+/// （模型无法伪造会话归属），Runtime 由执行语境提供。
+pub struct TaskAdapter {
+    runtime: Arc<Runtime>,
+    session: Uuid,
+}
+
+impl TaskAdapter {
+    /// 为指定会话构造可绑定执行体。
+    pub fn new(runtime: Arc<Runtime>, session: Uuid) -> Self {
+        Self { runtime, session }
+    }
+}
+
+impl ToolExecutor for TaskAdapter {
+    fn execute(&self, name: &str, args: &Value) -> Result<Value, String> {
+        execute(&self.runtime, self.session, name, args)
+    }
 }
