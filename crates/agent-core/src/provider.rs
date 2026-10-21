@@ -9,6 +9,31 @@ use serde_json::Value;
 use crate::error::CoreError;
 use crate::schema::{Message, Mode};
 
+/// OpenAI 兼容的 token 用量。
+///
+/// 字段名与 OpenAI Chat Completions 规范的 `usage` 对象一致，
+/// 便于网关透传的响应体直接映射，**不自创协议**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TokenUsage {
+    /// 输入 token（含命中缓存的部分）。
+    pub prompt_tokens: u64,
+    /// 输出 token。
+    pub completion_tokens: u64,
+    /// 总 token。
+    pub total_tokens: u64,
+    /// 命中缓存的输入 token（OpenAI 规范：usage.prompt_tokens_details.cached_tokens）。
+    pub cached_tokens: u64,
+}
+
+impl TokenUsage {
+    /// 计费口径：输入扣掉缓存命中，再加上输出。
+    ///
+    /// 推理 token 与总数不计入计费；缓存命中的输入 token 不重复计费。
+    pub fn billed_tokens(&self) -> u64 {
+        self.prompt_tokens.saturating_sub(self.cached_tokens) + self.completion_tokens
+    }
+}
+
 /// 一次回合产出的一个步骤。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProviderStep {

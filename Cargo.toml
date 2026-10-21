@@ -8,6 +8,7 @@ members = [
     "crates/agent-expert",
     "crates/agent-gateway",
     "crates/agent-mcp",
+    "crates/agent-openai",
     "crates/agent-memory",
     "crates/agent-prompts",
     "crates/agent-pty",
