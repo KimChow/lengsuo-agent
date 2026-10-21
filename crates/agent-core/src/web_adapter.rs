@@ -195,7 +195,10 @@ fn truncation_note(max_bytes: usize, kept: usize) -> String {
 
 /// 取 `url` 参数：必填、非空字符串。
 fn parse_url_arg(args: &Value) -> Result<String, String> {
-    let raw = args.get("url").and_then(Value::as_str).ok_or_else(bad_args)?;
+    let raw = args
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(bad_args)?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(bad_args());
