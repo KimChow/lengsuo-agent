@@ -185,6 +185,47 @@ pub const LOCAL_DISPATCH_ACTIONS: &[&str] = &[
     "approval:respond", // rpc.rs:250
 ];
 
+/// ACP 转发**传播超时**的默认秒数（转发档，**必须小于**网关 RPC 超时档）。
+///
+/// # 真相来源
+///
+/// `crates/agent-gateway/src/acp.rs` 的
+/// `const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);`
+/// （**私有 const、非 `pub`** ⇒ 契约层拿不到，只能扫源码文本读取）。
+///
+/// # 两档超时的关系（**承重**）
+///
+/// | 档 | 值 | 来源 | 超时后的信封码 |
+/// |---|---|---|---|
+/// | 转发传播超时 | **5s** | `agent-gateway/src/acp.rs` `FORWARD_TIMEOUT` | `502 "acp forwarding failed"` |
+/// | 网关 RPC 超时 | **30s**（默认） | `agent-core/src/config.rs` `DEFAULT_RPC_TIMEOUT_MS` | `408 "request timed out"` |
+///
+/// 网关 `/rpc` 的**外层** `timeout` 用的是 RPC 超时档（`rpc.rs` 的 `handle`），
+/// 而 ACP 转发在**内层**先撞自己的传播超时：转发失败被映射成 `502`
+/// （`rpc.rs` 的 `acp_forward`）。⇒ **正常情况下对端不应答 ⇒ 先撞 5s ⇒ 出 502，
+/// 外层 30s 永不命中转发路径**。
+///
+/// ⇒ **这条「5s < 30s」的大小关系是承重的**：一旦 `FORWARD_TIMEOUT` ≥ RPC 超时，
+/// 外层 30s 会**先**到 ⇒ 转发路径被外层 `timeout` 砍掉 ⇒ 用户拿到
+/// **`408 "request timed out"`** 而不是 `502` ⇒ **错误码退化**（408 的语义是
+/// 「整个 RPC 没做完」，不是「ACP 对端不应答」）⇒ **误导性错误码**。
+///
+/// # 断言口径
+///
+/// `tests/acp_timeout_tier.rs`：**实现值 == 登记值**（扫 `acp.rs` 文本解析
+/// `FORWARD_TIMEOUT` 的秒数）、**转发档 < RPC 默认档**（**两边都扫出来**：左边是
+/// `acp.rs` 的 `FORWARD_TIMEOUT`、右边是 `agent-core/src/config.rs` 的
+/// `DEFAULT_RPC_TIMEOUT_MS`，都不是硬编码 ⇒ 改任一边的实现都会红）、防空扫描。
+///
+/// # ⚠️ 已知限制（**可配行为，不是可断言的不变量**）
+///
+/// `rpc_timeout_ms` **可被用户配置改小**（`config.rs` 的 `"rpcTimeoutMs"` ⇒
+/// `positive_ms`）⇒ 若被配到 **≤ 转发超时**（例如 `3000`），转发路径就会被外层
+/// `timeout` 砍掉 ⇒ **错误码同样退化为 408（非 502）**。
+/// ⇒ **调用方须把 `rpcTimeoutMs` 配得大于转发超时**；本常量守的是**默认值下的**
+/// 关系，用户改小后**不再成立**（那是部署配置的责任，不写成断言）。
+pub const ACP_FORWARD_TIMEOUT_SECS: u64 = 5;
+
 /// v0 全部事件 kind，共 11 项——与 `agent-core::schema::EventKind` **逐项对齐**。
 ///
 /// 真相来源：`agent-core` `schema.rs` 的 `enum EventKind`（10 个变体：
