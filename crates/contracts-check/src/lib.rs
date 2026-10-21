@@ -443,6 +443,51 @@ pub const ACP_CONTROL_SUBTYPES: &[&str] = &[
                                   // ⛔ 不登记 "unknown"：Unknown 不可注册（见本常量文档注释）。
 ];
 
+/// ACP control 面的**信封级判别键面**（顶层 `type` 字段的取值）。
+///
+/// control 面在 JSON-RPC 三分类**之外**还有一层信封，顶层靠 `type` 字段判别：
+/// `control_request`（`ControlRequest` / `ControlRequestTag`）、
+/// `control_notification`（`ControlNotification` / `ControlNotificationTag`）、
+/// `control_response`（`ControlResponse` / `ControlResponseTag`）。
+///
+/// # 为什么是承重字面量
+///
+/// `crates/agent-acp/src/control.rs` 的 `TopLevel::classify` 用这些字面量做
+/// **顶层帧归类**（它是 `agent-acp` 编解码的**唯一入口**，`codec.rs` 的
+/// `decode_frame` 调它）。任一拼写漂移 ⇒ 该信封**不被识别** ⇒ 落 `other`
+/// 分支 ⇒ 抛 `MalformedMessage` ⇒ **整帧被拒**（**硬失败**，不是静默降级）。
+/// 且 serde 侧也用同一拼写去反序列化 ⇒ **编解码两端会一起错**（对端可能认得、
+/// 我方不认）。
+///
+/// # 双来源（本常量存在的原因）
+///
+/// ① **唯一权威来源** = 三个 `serde(rename = "…")`（`control.rs` 的
+///    `ControlRequestTag` / `ControlNotificationTag` / `ControlResponseTag`）；
+/// ② **消费方** = `TopLevel::classify` 的 `match` 分支字面量。
+/// 两者是**两处独立手写** ⇒ 必须有机器断言把它们锁在一起。
+///
+/// # 与 [`ACP_METHODS`] **正交**
+///
+/// 本面**不含** [`ACP_METHODS`] 里的方法名——那是**载荷内**判别键（`method`
+/// 字段），与本面（顶层 `type` 字段）分属两层，**互不相干**。
+/// （[`ACP_CONTROL_SUBTYPES`] 同理是**载荷内**的 `subtype` 判别键。）
+///
+/// # 断言口径（`tests/acp_envelope_tag_surface.rs`，**只守关系、不锁数量**）
+///
+/// 源码文本扫描 `control.rs`（`include_str!` **编译期**绑定；`agent-acp` 不是本
+/// crate 的依赖，`Cargo.toml` 属共享区、本卡不得改 ⇒ 只能扫文本、不能
+/// `use agent_acp::…`）断言：**实现面 == 登记面**（双向）、**双来源各自独立**
+/// 且相等、**未登记的 type 必被拒**（兜底臂返回 `MalformedMessage`）、**防空扫描**。
+///
+/// ⚠️ **不锁数量**：实现正当新增一个信封类型时，把新标签登记进本常量即可；任何
+/// `assert_eq!(ACP_ENVELOPE_TAGS.len(), 3)` 之类的断言都会在正当扩充时必红
+/// （同款教训：`tests/method_ledger.rs` 的 `assert_eq!(ACP_METHODS.len(), 13)`）。
+pub const ACP_ENVELOPE_TAGS: &[&str] = &[
+    "control_request",      // control.rs:95 ControlRequestTag（serde rename）
+    "control_notification", // control.rs:114 ControlNotificationTag（serde rename）
+    "control_response",     // control.rs:138 ControlResponseTag（serde rename）
+];
+
 /// `session:replay` 单页上限——`agent-core` 的 `DEFAULT_PAGE_LIMIT` 实际值。
 ///
 /// 真相来源：`crates/agent-core/src/event_log/mod.rs` 的
