@@ -2,7 +2,7 @@
 
 会话内任务看板，对照 参考客户端 的 task 工具族（`TaskCreate/TaskGet/TaskUpdate/TaskList`）。
 纯域逻辑：不依赖 tokio，不做任何 IO，不落盘；持久化与会话存储由上层
-（`agent-core` 运行时 / `agent-gateway` 工具接入）负责。规格源：worktree 根 `TASKS-SPEC.md`。
+（`agent-core` 运行时 / `agent-gateway` 工具接入）负责。规格源：仓根 `TASKS-SPEC.md`。
 
 ## 接口与兼容范围（冻结点）
 
