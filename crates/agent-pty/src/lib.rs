@@ -26,6 +26,8 @@
 //! # }
 //! ```
 
+#![forbid(unsafe_code)]
+
 // 对外只暴露规格冻结的类型；`ring`/`session`/`env_safety`/`policy_gate`
 // 是实现细节，保持私有。
 mod env_safety;

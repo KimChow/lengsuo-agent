@@ -60,6 +60,8 @@
 //! }
 //! ```
 
+#![forbid(unsafe_code)]
+
 pub mod audit;
 pub mod catalog;
 pub mod error;
