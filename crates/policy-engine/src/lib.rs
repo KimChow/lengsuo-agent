@@ -6,6 +6,7 @@
 //! - 不解析 DOM：`click_dom` 只做选择器字符串的传递与命中判定回调。
 //! - 不做权威存储、不下发、不判计费与权限：策略由上层注入，本 crate 只判。
 //! - 不引入 tokio/文件系统/网络；一切时间来自 `EvaluateRequest::now_ms`，可确定性复现。
+//! - 判定层（`evaluate` 模块）把上面这些积木接成可调用的判定入口。
 //!
 //! 安全底线（全部 fail-closed，AGENTS.md §3）：
 //! - 没有任何策略命中、策略取不到、生效时间窗不在窗内 ⇒ 一律拒绝并在
@@ -15,5 +16,6 @@
 
 #![forbid(unsafe_code)]
 
+pub mod evaluate;
 pub mod model;
 pub mod pattern;
