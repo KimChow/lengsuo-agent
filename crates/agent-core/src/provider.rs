@@ -153,6 +153,15 @@ pub trait Provider: Send + Sync {
     fn compaction_capability(&self) -> CompactionCapability {
         CompactionCapability::Unsupported
     }
+
+    /// 本回合最近一次 provider 调用的 token 用量；无实现或无用量 ⇒ `None`。
+    ///
+    /// 带默认实现是为了让既有 `impl Provider`（`EchoProvider`、
+    /// `UnimplementedProvider`、网关测试桩等）零改动；真实适配器覆写它，
+    /// 由回合层在拿到步骤序列后落 `model.usage` 事件。
+    fn last_usage(&self) -> Option<TokenUsage> {
+        None
+    }
 }
 
 /// 测试用回显 provider：把用户输入原样回显，并产出 `Finished`。

@@ -208,4 +208,12 @@ impl Provider for OpenAiProvider {
     ) -> Result<Vec<ProviderStep>, CoreError> {
         self.call(context)
     }
+
+    /// 最近一次成功调用的 usage（只读，不消费）；上游未返 usage ⇒ `None`。
+    ///
+    /// 与同名固有方法同口径；此处直读槽位（`OpenAiProvider::last_usage(self)`
+    /// 在本 impl 内会解析回 trait 方法，触发无限递归）。
+    fn last_usage(&self) -> Option<TokenUsage> {
+        self.usage.lock().ok().and_then(|slot| *slot)
+    }
 }
