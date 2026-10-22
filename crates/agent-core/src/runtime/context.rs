@@ -33,6 +33,13 @@ use super::compaction;
 use super::sessions::memory_vars::TurnMemory;
 use super::sessions::ExpertDirs;
 
+// 产品 / 身份文件类变量取值（x-prompt-vars-wire 卡）：文件与 `memory_vars.rs`
+// 同目录、同风格。本仓的会话子模块声明点是 `runtime/sessions.rs`（不是卡面写的
+// `sessions/mod.rs`），而本卡硬边界不含该文件，故在 `context.rs` 用 `#[path]`
+// 挂载同一文件，避免越界改动共享模块声明点。
+#[path = "sessions/product_vars.rs"]
+mod product_vars;
+
 /// 历史消息进上下文前的字符上限（防单条大输出顶爆模型输入；大结果走 result_ref）。
 const HISTORY_MESSAGE_CHARS: usize = 2000;
 
@@ -205,28 +212,55 @@ impl Runtime {
         }
     }
 
-    /// 模板变量：身份层 + 工作区 + 日期 + 用户规则（v0 空）+ 记忆四段 + **专家人格**。
+    /// 模板变量：**每个 `PromptVars` 字段都显式赋值**（不再用 `..default()` 掩盖）。
     ///
-    /// 记忆四段（h3-memory-inject-4seg）：`memory_identity` / `memory_user` /
-    /// `memory_project` / `memory_daily` 各自独立成段，**空串 ⇒ 整段省略**
-    /// （`agent-prompts` 的 `slot()`，本卡不改）。产品/身份/风格/专家人格/语言/平台/
-    /// 功能开关/工具呈现/产物目录等新变量仍走 `PromptVars::default()`
-    /// （字符串空、布尔 `false`）——它们的接线属 A2/A3/A5/A7 卡。
+    /// 来源分三类：
+    /// - **运行时事实**：身份层（`read_identity`：AI 名 / 用户称呼 / SOUL）、
+    ///   身份四文件正文与路径、`product.json`（产品名 / 数据目录名 / `is_windows`）、
+    ///   工作区、日期、记忆四段、专家人格（见 `sessions/product_vars.rs`）；
+    /// - **配置面尚未提供**：`identity_mode`、`user_rules`、`tone_style`、
+    ///   `sub_agent_prompt`、`response_language`、功能开关、工具呈现、产物目录 ——
+    ///   显式填空串 / `false`（空值 ⇒ 模板既有语义整段省略）；
+    /// - **有意留空**：`expert_persona` 专用槽（人格只填 `plugin_agent_prompt` 一处，
+    ///   两处同填会渲染两次，见 [`Self::expert_persona`] 文档）。
+    ///
+    /// 脱敏（AGENTS §6）：从文件/配置读来的**正文**一律过 [`Self::redact`]；
+    /// **路径**类变量不脱敏（路径不是凭据）。
     fn prompt_vars(&self, session: &Session, memory: &TurnMemory) -> PromptVars {
         let identity = self.read_identity(&session.workspace_root);
+        let product = self.product_vars(&session.workspace_root);
         PromptVars {
+            product_name: self.redact(&product.product_name),
+            data_folder_name: self.redact(&product.data_folder_name),
             ai_name: self.redact(&identity.ai_name),
             user_name: self.redact(&identity.user_name),
             soul: self.redact(&identity.soul),
+            identity: self.redact(&product.identity),
+            user: self.redact(&product.user),
+            bootstrap: self.redact(&product.bootstrap),
+            identity_mode: String::new(),
+            soul_path: product.soul_path,
+            identity_path: product.identity_path,
+            user_path: product.user_path,
+            bootstrap_path: product.bootstrap_path,
             workspace: self.redact(&session.workspace_root),
             date: date_text(),
             user_rules: String::new(),
+            tone_style: String::new(),
+            plugin_agent_prompt: self.expert_persona(session),
+            sub_agent_prompt: String::new(),
+            response_language: String::new(),
+            is_windows: product.is_windows,
+            feature_browser_use: false,
+            feature_computer_use: false,
+            feature_expert_management: false,
+            tool_result_presentation: String::new(),
+            artifact_dir: String::new(),
             memory_identity: memory.segments.identity.clone(),
             memory_user: memory.segments.user.clone(),
             memory_project: memory.segments.project.clone(),
             memory_daily: memory.segments.daily.clone(),
-            plugin_agent_prompt: self.expert_persona(session),
-            ..PromptVars::default()
+            expert_persona: String::new(),
         }
     }
 
