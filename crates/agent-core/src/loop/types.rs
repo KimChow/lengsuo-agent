@@ -4,6 +4,8 @@ use serde_json::Value;
 
 use crate::provider::StepOptions;
 
+use super::cancel::CancelSignal;
+
 /// 默认熔断回合数（卡面：maxSteps 默认 30）。
 pub const DEFAULT_MAX_STEPS: usize = 30;
 
@@ -102,6 +104,25 @@ pub struct ChatTurn {
 pub trait ToolExecutor {
     /// 执行逻辑工具，返回可序列化结果；`Err` 为执行失败说明。
     fn execute(&self, name: &str, args: &Value) -> Result<Value, String>;
+}
+
+/// 可取消的工具执行方（宿主按需实现；与 [`ToolExecutor`] 是**两个并存的槽位**）。
+///
+/// 实现方在**执行区间内**自行观察取消信号并收尾（例如 `wait_cancelled` 后
+/// 终止子进程），返回 `Err` 表示本次调用被取消打断。返回 `Ok` 表示正常完成。
+///
+/// 优先级：会话一旦登记了可取消执行器，工具步就走本槽位（它的语义是
+/// [`ToolExecutor`] 的超集）；未登记时既有 `ToolExecutor` 路径逐字节不变。
+/// 返回后的**结算段不可打断**：运行时不因取消标志跳过结算，未配对的调用由
+/// 回合收口按 `TOOLS_INTERRUPTED` 结算。
+pub trait CancellableToolExecutor: Send + Sync {
+    /// 执行逻辑工具，返回可序列化结果；`Err` 为执行失败或被打断的说明。
+    fn execute_cancellable(
+        &self,
+        name: &str,
+        args: &Value,
+        cancel: &CancelSignal,
+    ) -> Result<Value, String>;
 }
 
 /// 模型提供方（本层只看整段文本 + 工具请求；流式由上层切分）。
