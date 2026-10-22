@@ -27,6 +27,7 @@ pub use actions::{
     LOCAL_ONLY_ANSWER_ACTIONS,
 };
 pub use envelope::{ENVELOPE_CODES, FROZEN_ENVELOPE_CODES, GATEWAY_ENVELOPE_KEYS};
+pub use events::EVENT_FRAME_KEYS;
 pub use events::EVENT_KINDS;
 pub use replay::{REPLAY_DATA_KEYS, REPLAY_MAX_PAGE};
 pub use session::{

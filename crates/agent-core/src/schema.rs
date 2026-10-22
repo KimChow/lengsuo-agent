@@ -248,13 +248,18 @@ pub struct Event {
 
 impl Event {
     /// 推送给订阅者的行（事件流每行一个 JSON 对象）。
+    ///
+    /// 键面是**线上帧的 snake_case 顶层键**（`seq` / `session_id` / `kind` /
+    /// `payload` / `ts_ms`），与 `agent-gateway` 的推帧点、壳侧 `GatewayEvent`
+    /// 解码器一致；已登记为 `contracts_check::EVENT_FRAME_KEYS` 并被
+    /// `contracts-check/tests/event_frame_surface.rs` 钉住。
     pub fn to_envelope(&self) -> Value {
         serde_json::json!({
             "seq": self.seq,
-            "sessionId": self.session_id.to_string(),
+            "session_id": self.session_id.to_string(),
             "kind": self.kind,
             "payload": self.payload,
-            "tsMs": self.ts_ms,
+            "ts_ms": self.ts_ms,
         })
     }
 }
