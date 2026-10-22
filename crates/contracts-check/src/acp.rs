@@ -1,0 +1,329 @@
+#[allow(unused_imports)] // 仅供本模块文档注释里的跨模块链接解析；本模块代码不引用它们。
+use crate::actions::{ACP_FORWARDED_ACTIONS, ACTIONS};
+
+/// ACP 标准方法名（斜杠式），共 13 项——与 `agent-acp` 的 `method` 模块
+/// **逐项对齐**。
+///
+/// 真相来源：`crates/agent-acp/src/methods.rs` 的 `pub mod method`（13 个
+/// `pub const`，见 `docs/contracts/acp-method-ledger.md` §2）。命名按 ACP 0.25.0
+/// 斜杠写法；与 v0 动作面（冒号式 [`ACTIONS`]）**不是**同一套命名——
+/// 本常量只登记方法名集合，**不**声明任何映射关系。
+///
+/// **为什么需要它**：网关侧 `crates/agent-gateway/src/acp.rs::forward_action`
+/// 把动作名**原样**当 ACP method 投；`docs/contracts/acp-host.md` §7 决策项 2
+/// 要求「其余动作的 `域:动作` → ACP method 对应关系」先有台账。本常量是该台账
+/// （`docs/contracts/acp-method-ledger.md`）的对端清单锚点：
+/// `tests/method_ledger.rs` 用**源码文本扫描**从 `methods.rs` 抽字面量，断言其
+/// 集合与本常量**相等**——一侧加方法、另一侧漏登记即红。
+///
+/// 不要在这里删项：本常量是 ACP 方法面的单一冻结来源，删项会让上述相等断言
+/// 静默少跑一圈。
+pub const ACP_METHODS: &[&str] = &[
+    "initialize",                 // agent-acp method::INITIALIZE
+    "authenticate",               // agent-acp method::AUTHENTICATE
+    "session/new",                // agent-acp method::SESSION_NEW
+    "session/load",               // agent-acp method::SESSION_LOAD
+    "session/resume",             // agent-acp method::SESSION_RESUME
+    "session/prompt",             // agent-acp method::SESSION_PROMPT
+    "session/cancel",             // agent-acp method::SESSION_CANCEL（通知）
+    "session/update",             // agent-acp method::SESSION_UPDATE（通知）
+    "session/set_mode",           // agent-acp method::SESSION_SET_MODE
+    "session/request_permission", // agent-acp method::SESSION_REQUEST_PERMISSION
+    "logout",                     // agent-acp method::LOGOUT
+    "elicitation/create",         // agent-acp method::ELICITATION_CREATE
+    "elicitation/complete",       // agent-acp method::ELICITATION_COMPLETE
+];
+
+/// ACP **通知方法面**（单向、无响应）——[`ACP_METHODS`] 的**子集**。
+///
+/// ACP 方法分两种**帧形状**（JSON-RPC 2.0）：**请求-响应**
+/// （`Message::Request`，发出去必须配一个 `Response` 回来）与**通知**
+/// （`Message::Notification`，发出去**永不配响应**，对端不应答）。本常量
+/// 登记的是**第二种**。真相来源是 `agent-acp` 的 `method` 模块里**常量行
+/// 上一行的 `///` 文档注释**带「（通知）」的那几项：
+///
+/// | 方法 | 常量 | 常量行 | 「（通知）」散文锚点 |
+/// |---|---|---|---|
+/// | `session/cancel` | `method::SESSION_CANCEL` | `methods.rs:368` | `methods.rs:367` |
+/// | `session/update` | `method::SESSION_UPDATE` | `methods.rs:370` | `methods.rs:369` |
+///
+/// # 为什么必须结构化登记（此前只有散文）
+///
+/// 「通知」这个语义属性此前**只由三个汉字承载**（`（通知）`）：实现侧
+/// `grep -rn "NOTIFICATION\|NOTIFY" crates/agent-acp/src/methods.rs` 零命中
+/// （没有通知族清单常量），契约侧 [`ACP_METHODS`] 里那两行也只是**行尾散文
+/// 注释**。散文被改写/挪位/重排就**静默丢失**，没有任何机器可判定的断言。
+///
+/// # 为什么它是**承重**语义
+///
+/// 网关的 ACP 转发机制是**请求-响应**（`crates/agent-gateway/src/acp.rs` 的
+/// `forward_action` 发 Rpc 请求帧、按 id 等响应帧配对）。把**通知**方法投进
+/// 那条路径 ⇒ 对端永不应答 ⇒ 本端等到超时 ⇒ 用户拿 `502 "acp forwarding
+/// failed"`，而操作**实际已在对端发生** ⇒ **必然的错误行为**。
+/// `session:cancel` 的终局裁定（台账 `docs/contracts/acp-method-ledger.md` §5）
+/// 正是基于这条推理。
+///
+/// # 断言口径（`tests/acp_notification_surface.rs`，**只守关系、不锁数量**）
+///
+/// 源码文本扫描 `methods.rs`（常量行**上一行**的 `///` 注释含「通知」⇒ 视为
+/// 通知方法）断言：**实现面 ⊆ 登记面**、**登记面 ⊆ 实现面**、**通知族 ⊆
+/// [`ACP_METHODS`]**、**通知族 ∩ [`ACP_FORWARDED_ACTIONS`] == ∅**、**通知族 ∩
+/// [`ACP_FORWARD_WHITELIST_SNAPSHOT`] == ∅**（通知方法**不得**进转发面）、
+/// **逐项锚点仍在**。
+///
+/// ⚠️ **不锁数量/取值**：下一张卡正当新增一个通知方法时，把新方法登记进本
+/// 常量即可；任何 `assert_eq!(ACP_NOTIFICATION_METHODS.len(), 2)` 之类的断言
+/// 都会在正当扩充时必红（教训：`tests/method_ledger.rs` 的
+/// `assert_eq!(ACP_METHODS.len(), 13)`）。
+pub const ACP_NOTIFICATION_METHODS: &[&str] = &[
+    // agent-acp method::SESSION_CANCEL（methods.rs:368；「（通知）」锚点 methods.rs:367）
+    "session/cancel",
+    // agent-acp method::SESSION_UPDATE（methods.rs:370；「（通知）」锚点 methods.rs:369）
+    "session/update",
+];
+
+/// 网关 ACP 转发白名单的**当前快照**（本卡：**快照**，**非不变量**）。
+///
+/// 真相来源：`crates/agent-gateway/src/rpc.rs::ACP_FORWARD_ACTIONS`，本卡取值
+/// `["sys:ping"]`（唯一成员，v0 动作**原名**，非自创名）。
+///
+/// ⚠️ **这是快照，不是不变量**：下一张卡正当扩充白名单时，本常量**要同步更新**；
+/// `tests/method_ledger.rs` **不得**据此锁死「白名单恰好几个成员」——那样会在
+/// 合法扩充时必红。本常量只用于守**关系不变量**：
+/// `ACP_FORWARD_WHITELIST_SNAPSHOT ⊆ ACTIONS`（防自创名）。
+///
+/// 本卡**不新增**白名单成员（见 `docs/contracts/acp-method-ledger.md` §5）。
+pub const ACP_FORWARD_WHITELIST_SNAPSHOT: &[&str] = &["sys:ping"];
+
+/// ACP 转发**传播超时**的默认秒数（转发档，**必须小于**网关 RPC 超时档）。
+///
+/// # 真相来源
+///
+/// `crates/agent-gateway/src/acp.rs` 的
+/// `const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);`
+/// （**私有 const、非 `pub`** ⇒ 契约层拿不到，只能扫源码文本读取）。
+///
+/// # 两档超时的关系（**承重**）
+///
+/// | 档 | 值 | 来源 | 超时后的信封码 |
+/// |---|---|---|---|
+/// | 转发传播超时 | **5s** | `agent-gateway/src/acp.rs` `FORWARD_TIMEOUT` | `502 "acp forwarding failed"` |
+/// | 网关 RPC 超时 | **30s**（默认） | `agent-core/src/config.rs` `DEFAULT_RPC_TIMEOUT_MS` | `408 "request timed out"` |
+///
+/// 网关 `/rpc` 的**外层** `timeout` 用的是 RPC 超时档（`rpc.rs` 的 `handle`），
+/// 而 ACP 转发在**内层**先撞自己的传播超时：转发失败被映射成 `502`
+/// （`rpc.rs` 的 `acp_forward`）。⇒ **正常情况下对端不应答 ⇒ 先撞 5s ⇒ 出 502，
+/// 外层 30s 永不命中转发路径**。
+///
+/// ⇒ **这条「5s < 30s」的大小关系是承重的**：一旦 `FORWARD_TIMEOUT` ≥ RPC 超时，
+/// 外层 30s 会**先**到 ⇒ 转发路径被外层 `timeout` 砍掉 ⇒ 用户拿到
+/// **`408 "request timed out"`** 而不是 `502` ⇒ **错误码退化**（408 的语义是
+/// 「整个 RPC 没做完」，不是「ACP 对端不应答」）⇒ **误导性错误码**。
+///
+/// # 断言口径
+///
+/// `tests/acp_timeout_tier.rs`：**实现值 == 登记值**（扫 `acp.rs` 文本解析
+/// `FORWARD_TIMEOUT` 的秒数）、**转发档 < RPC 默认档**（**两边都扫出来**：左边是
+/// `acp.rs` 的 `FORWARD_TIMEOUT`、右边是 `agent-core/src/config.rs` 的
+/// `DEFAULT_RPC_TIMEOUT_MS`，都不是硬编码 ⇒ 改任一边的实现都会红）、防空扫描。
+///
+/// # ⚠️ 已知限制（**可配行为，不是可断言的不变量**）
+///
+/// `rpc_timeout_ms` **可被用户配置改小**（`config.rs` 的 `"rpcTimeoutMs"` ⇒
+/// `positive_ms`）⇒ 若被配到 **≤ 转发超时**（例如 `3000`），转发路径就会被外层
+/// `timeout` 砍掉 ⇒ **错误码同样退化为 408（非 502）**。
+/// ⇒ **调用方须把 `rpcTimeoutMs` 配得大于转发超时**；本常量守的是**默认值下的**
+/// 关系，用户改小后**不再成立**（那是部署配置的责任，不写成断言）。
+pub const ACP_FORWARD_TIMEOUT_SECS: u64 = 5;
+
+// ---- ACP wire 错误码面（`agent-acp` 的 JSON-RPC **负数**族） ----
+//
+// ⛔ 这是**另一套命名空间**，与上面的 [`ENVELOPE_CODES`]（网关信封层 `u16`）**不是**
+// 同一族、⛔ **不可混表**：
+// - 信封层码：**非负 u16**，出现在信封**顶层 `code`**（`{code, msg, data}`）；
+// - ACP wire 码：**负 i64**，只出现在 **`data.error.code`**。
+//
+// 两套码**会同时出现在同一个响应体里**：`crates/agent-gateway/src/rpc.rs` 的
+// `acp_forward()` 在「转发成功但对端回的是 ACP 错误」时，把对端的
+// `{"error":{…}}` 原样塞进信封的 `data` 字段，而信封**顶层 `code` 仍是 `0`**
+// （转发本身送达并拿到应答）。既有回归锚：
+// `crates/agent-gateway/tests/acp_forward_whitelist.rs`（断言 `resp["code"] == 0`
+// 且 `resp["data"]["error"]["code"] == -32601`）。
+//
+// ⚠️ **标准族与私有族是两层**（`crates/agent-acp/src/message.rs:61` 的注释：
+// 「错误码：标准族见 `JSONRPC_ERROR_*` 常量，**私有码原样保留**」）⇒ 登记成
+// **两个常量**，不合并成一族。
+//
+// 真相来源：`crates/agent-acp/src/{message,router,host_router}.rs` 的
+// `pub const …: i64` 字面量。断言：`tests/acp_error_surface.rs`（源码文本扫描，
+// 双向差集 + 两族不相交 + 族内去重 + 与信封层不串味，**只守关系、不锁数量**）。
+
+/// ACP **标准族** wire 错误码（JSON-RPC 2.0 标准区，当前 4 项）。
+///
+/// 真相来源：`crates/agent-acp/src/message.rs` 的四个 `JSONRPC_ERROR_*` 常量。
+///
+/// | 码 | 常量 | 来源 | 语义 |
+/// |---|---|---|---|
+/// | `-32700` | `JSONRPC_ERROR_PARSE` | `message.rs:71` | 解析失败 |
+/// | `-32601` | `JSONRPC_ERROR_METHOD_NOT_FOUND` | `message.rs:73` | 方法不存在（host 侧自动回，防对端悬挂） |
+/// | `-32600` | `JSONRPC_ERROR_INVALID_REQUEST` | `message.rs:75` | 无效请求 |
+/// | `-32602` | `JSONRPC_ERROR_INVALID_PARAMS` | `message.rs:77` | 参数无效（如 `initialize` 参数解析失败） |
+///
+/// ⚠️ **不锁数量**：实现正当新增一个标准码时，把新码登记进本常量即可；「恰好
+/// 4 项」之类的断言会在正当扩充时必红（教训：`tests/method_ledger.rs` 的
+/// `assert_eq!(ACP_METHODS.len(), 13)`）。
+pub const ACP_STANDARD_ERROR_CODES: &[i64] = &[-32700, -32601, -32600, -32602];
+
+/// ACP **私有族** wire 错误码（非标准区，当前 2 个**码值**）。
+///
+/// 真相来源：`crates/agent-acp/src/router.rs` 的两个私有码常量。
+///
+/// | 码 | 常量 | 来源 | 语义 |
+/// |---|---|---|---|
+/// | `-32000` | `ACP_ERROR_CONNECTION_CLOSED` | `router.rs:40` | 连接终止（撤下 pending） |
+/// | `-32001` | `ACP_ERROR_INTERNAL` | `router.rs:42` | 内部协议违例（如对端响应既无 result 也无 error） |
+///
+/// ⚠️ **按「码值」去重登记**：`router.rs:40` 的 `ACP_ERROR_CONNECTION_CLOSED` 与
+/// `host_router.rs:278` 的别名 `ACP_ERROR_HOST_CONNECTION_CLOSED` **同值**
+/// （`-32000`；别名写成 `= ACP_ERROR_CONNECTION_CLOSED;` 而非字面量）。本常量
+/// 登记的是**码值**、**不登记常量名** ⇒ `-32000` 只出现一次。
+///
+/// `router.rs:38` 的注释明写这是「非标准族，`-3260x` 之外的自定义区」。
+pub const ACP_PRIVATE_ERROR_CODES: &[i64] = &[-32000, -32001];
+
+/// ACP **control 面**（`V.*` subtype）的 **wire 拼写面**——**可注册**的 11 个
+/// subtype 名。
+///
+/// # 真相来源
+///
+/// `crates/agent-acp/src/control.rs` 的 `enum ControlSubtype`（12 个变体：11 个
+/// 具名 + `Unknown`）与 `impl ControlSubtype::as_str()`（`control.rs:48-66`）里
+/// **手写**的 `match` 字面量。serde 侧另有 `#[serde(rename_all = "snake_case")]`
+/// （`control.rs:19`）——**变体名 ⇒ wire 名**的**自动**派生规则；本常量登记的是
+/// **手写拼写那一份**，两者由 `tests/acp_control_surface.rs` 的「serde 派生名
+/// == 手写拼写」断言钉在一起。
+///
+/// # 为什么它是**承重**的：它就是 **handler 路由键**
+///
+/// - 注册侧：`host_send.rs` 的 `on_control`（`:96-111`）用 `subtype.as_str()`
+///   作 **map 的键**插入 handler 表；
+/// - 分派侧：`host_router.rs` 的入站分派（`:171-185`）用**同一个** `as_str()`
+///   **查表**。
+///
+/// ⇒ **拼写写错 ⇒ 查表不命中 ⇒ 请求掉进事件队列**（`host_router.rs:183`）⇒ 不是
+/// 报错，而是**静默降级**：请求**永久悬挂**，除非上层自己 `respond_control` 兜底
+/// （`host_send.rs:113-122`「对未认领的 control 请求延后应答」）。
+///
+/// # 为什么**排除** `Unknown`（本常量里**没有** `"unknown"`）
+///
+/// `Unknown`（`control.rs:43-45`）是 `#[serde(other)]` 的兜底变体：解码遇到
+/// **未知/新增** subtype 时**保留原文**（它承载「原文」，不是某个固定拼写）。
+/// `as_str()` 对它的 `"unknown"` 是**占位串**（`control.rs:49`：「`Unknown` 无法
+/// 还原原文，返回占位串仅供日志」），**不是**任何真实 subtype 的 wire 名。
+///
+/// 且注册侧**明确拒绝**注册它：`host_send.rs:102-104`
+/// `if subtype == ControlSubtype::Unknown { return; }`（「注册它等于死代码」）⇒
+/// **`Unknown` 不属于「可注册 handler 的 wire 名面」**；混进清单会误导使用者去
+/// 注册一个**永不命中**的键。
+///
+/// # 命名空间（**与 [`ACP_METHODS`] 不是一套**）
+///
+/// | 面 | 拼写风格 | 例 |
+/// |---|---|---|
+/// | ACP method 面 | 斜杠 `域/动作` | `session/update` |
+/// | control subtype 面 | 下划线 `snake_case` | `session_update` |
+///
+/// 归一化后**同名**但**同层不同义** ⇒ **不可互换**。
+///
+/// # 断言口径（`tests/acp_control_surface.rs`，**只守关系、不锁数量/取值**）
+///
+/// 源码文本扫描 `control.rs`（`include_str!` **编译期**绑定；`agent-acp` 不是本
+/// crate 的依赖，`Cargo.toml` 属共享区、本卡不得改 ⇒ 只能扫文本、不能
+/// `use agent_acp::…`）断言：**实现面 ⊆ 登记面**、**登记面 ⊆ 实现面**、
+/// **serde 派生名 == 手写拼写**、**逐项锚点仍在**、**`Unknown` 被排除**、
+/// **与 method 面拼写风格不相交**。
+///
+/// ⚠️ **不锁数量/取值**：实现正当新增一个可注册 subtype 时，把新名字登记进本
+/// 常量即可；任何 `assert_eq!(ACP_CONTROL_SUBTYPES.len(), 11)` 之类的断言都会
+/// 在正当扩充时必红（教训：`tests/method_ledger.rs` 的
+/// `assert_eq!(ACP_METHODS.len(), 13)`）。
+pub const ACP_CONTROL_SUBTYPES: &[&str] = &[
+    "elicitation_create",         // control.rs:53 Self::ElicitationCreate
+    "elicitation_complete",       // control.rs:54 Self::ElicitationComplete
+    "session_request_permission", // control.rs:55 Self::SessionRequestPermission
+    "session_update",             // control.rs:56 Self::SessionUpdate
+    "fs_read_text_file",          // control.rs:57 Self::FsReadTextFile
+    "fs_write_text_file",         // control.rs:58 Self::FsWriteTextFile
+    "terminal_create",            // control.rs:59 Self::TerminalCreate
+    "terminal_kill",              // control.rs:60 Self::TerminalKill
+    "terminal_output",            // control.rs:61 Self::TerminalOutput
+    "terminal_release",           // control.rs:62 Self::TerminalRelease
+    "terminal_wait_for_exit",     // control.rs:63 Self::TerminalWaitForExit
+                                  // ⛔ 不登记 "unknown"：Unknown 不可注册（见本常量文档注释）。
+];
+
+/// ACP control 面的**信封级判别键面**（顶层 `type` 字段的取值）。
+///
+/// control 面在 JSON-RPC 三分类**之外**还有一层信封，顶层靠 `type` 字段判别：
+/// `control_request`（`ControlRequest` / `ControlRequestTag`）、
+/// `control_notification`（`ControlNotification` / `ControlNotificationTag`）、
+/// `control_response`（`ControlResponse` / `ControlResponseTag`）。
+///
+/// # 为什么是承重字面量
+///
+/// `crates/agent-acp/src/control.rs` 的 `TopLevel::classify` 用这些字面量做
+/// **顶层帧归类**（它是 `agent-acp` 编解码的**唯一入口**，`codec.rs` 的
+/// `decode_frame` 调它）。任一拼写漂移 ⇒ 该信封**不被识别** ⇒ 落 `other`
+/// 分支 ⇒ 抛 `MalformedMessage` ⇒ **整帧被拒**（**硬失败**，不是静默降级）。
+/// 且 serde 侧也用同一拼写去反序列化 ⇒ **编解码两端会一起错**（对端可能认得、
+/// 我方不认）。
+///
+/// # 双来源（本常量存在的原因）
+///
+/// ① **唯一权威来源** = 三个 `serde(rename = "…")`（`control.rs` 的
+///    `ControlRequestTag` / `ControlNotificationTag` / `ControlResponseTag`）；
+/// ② **消费方** = `TopLevel::classify` 的 `match` 分支字面量。
+/// 两者是**两处独立手写** ⇒ 必须有机器断言把它们锁在一起。
+///
+/// # 与 [`ACP_METHODS`] **正交**
+///
+/// 本面**不含** [`ACP_METHODS`] 里的方法名——那是**载荷内**判别键（`method`
+/// 字段），与本面（顶层 `type` 字段）分属两层，**互不相干**。
+/// （[`ACP_CONTROL_SUBTYPES`] 同理是**载荷内**的 `subtype` 判别键。）
+///
+/// # 断言口径（`tests/acp_envelope_tag_surface.rs`，**只守关系、不锁数量**）
+///
+/// 源码文本扫描 `control.rs`（`include_str!` **编译期**绑定；`agent-acp` 不是本
+/// crate 的依赖，`Cargo.toml` 属共享区、本卡不得改 ⇒ 只能扫文本、不能
+/// `use agent_acp::…`）断言：**实现面 == 登记面**（双向）、**双来源各自独立**
+/// 且相等、**未登记的 type 必被拒**（兜底臂返回 `MalformedMessage`）、**防空扫描**。
+///
+/// ⚠️ **不锁数量**：实现正当新增一个信封类型时，把新标签登记进本常量即可；任何
+/// `assert_eq!(ACP_ENVELOPE_TAGS.len(), 3)` 之类的断言都会在正当扩充时必红
+/// （同款教训：`tests/method_ledger.rs` 的 `assert_eq!(ACP_METHODS.len(), 13)`）。
+pub const ACP_ENVELOPE_TAGS: &[&str] = &[
+    "control_request",      // control.rs:95 ControlRequestTag（serde rename）
+    "control_notification", // control.rs:114 ControlNotificationTag（serde rename）
+    "control_response",     // control.rs:138 ControlResponseTag（serde rename）
+];
+
+// ---- JSON-RPC 2.0 **基础信封键面**（真相来源：`agent-acp/src/message.rs`） ----
+/// 帧分类**判别键面**：`Message::from_value` 判别三分类时实际查的键名。
+pub const ACP_JSONRPC_DISCRIMINATION_KEYS: &[&str] = &["id", "method", "result", "error"];
+/// `JsonRpcRequest` 的线上键名面（wire 键名 = 字段名，该文件无 `serde(rename)`）。
+pub const ACP_JSONRPC_REQUEST_KEYS: &[&str] = &["jsonrpc", "id", "method", "params"];
+/// `JsonRpcNotification` 的线上键名面。
+pub const ACP_JSONRPC_NOTIFICATION_KEYS: &[&str] = &["jsonrpc", "method", "params"];
+/// `JsonRpcResponse` 的线上键名面。
+pub const ACP_JSONRPC_RESPONSE_KEYS: &[&str] = &["jsonrpc", "id", "result", "error"];
+/// `JsonRpcErrorObject`（JSON-RPC error 子对象）的线上键名面。
+pub const ACP_JSONRPC_ERROR_OBJECT_KEYS: &[&str] = &["code", "message", "data"];
+
+/// `jsonrpc` 字段的线上取值（由 `JsonRpcVersion` 的自定义 `Deserialize` 硬保证）。
+pub const ACP_JSONRPC_VERSION: &str = "2.0";
+
+/// ACP **出站**通知方法面（host → client 主动推的 method 名）。口径 = 本仓 `notify(...)` 调用点传入的 method 字面量。
+/// 断言见 `tests/acp_outbound_notification.rs`（只守关系，不锁数量/取值）；生产侧 `notify()` 签名是自由字符串（`impl Into<String>`），本身不构成一个面。
+pub const ACP_OUTBOUND_NOTIFICATION_METHODS: &[&str] = &[
+    "session/update", // notify("session/update")：host 主动推的增量通知
+];
