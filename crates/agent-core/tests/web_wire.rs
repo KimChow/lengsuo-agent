@@ -3,8 +3,9 @@
 //! 本测试**不经过注册表**（注册由汇总卡在 `tool.rs` 负责），直接调本卡产出的
 //! `tool_specs()` 与适配函数；抓取端口用本地 mock，**不依赖外网**（CI 无网仍可跑）。
 //!
-//! 源文件按 `#[path]` 引入而非 `use agent_core::…`：正式模块声明在共享文件
-//! `lib.rs` 上（汇总卡负责），本卡不改共享文件，故测试自带一份等价副本运行。
+//! 挂载方式：`tool_web.rs` 与 `web_adapter.rs` **均已在 crate 本体**
+//! （`lib.rs` 的 `pub mod tool_web;` / `pub mod web_adapter;`）⇒ 这里直接引
+//! `agent_core::…`，验的是**本体**而不是影子副本。
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -12,27 +13,10 @@ use std::time::Duration;
 
 use agent_core::r#loop::ToolExecutor;
 use agent_core::tool::ToolKind;
+use agent_core::tool_web::tool_specs;
+use agent_core::web_adapter::{FetcherPort, WebFetchAdapter, WebFetchPage, WebFetchPort};
 use agent_tools_exec::{FetchResult, WebFetcher};
 use serde_json::json;
-
-#[path = "../src/tool_web.rs"]
-mod tool_web;
-#[path = "../src/web_adapter.rs"]
-mod web_adapter;
-
-// 源文件用 `crate::` 前缀引用本 crate 的类型；测试内用等价 shim 顶上。
-pub mod tool {
-    pub use agent_core::tool::ToolKind;
-}
-pub mod redact {
-    pub use agent_core::redact::Redactor;
-}
-pub mod r#loop {
-    pub use agent_core::r#loop::ToolExecutor;
-}
-
-use tool_web::tool_specs;
-use web_adapter::{FetcherPort, WebFetchAdapter, WebFetchPage, WebFetchPort};
 
 /// 本地 mock 端口：按 URL 返回预置页面或预置错误（**不触网**）。
 #[derive(Default)]
