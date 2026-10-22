@@ -165,10 +165,7 @@ fn default_registry_registers_three_read_tools() {
     // 只守关系，不锁数量：注册表规模会随工具接入增长（默认注册表现含
     // 4 个记忆写工具 + 3 个记忆检索工具 + 其他域工具）。
     for (name, _) in MEMORY_SEARCH_TOOL_SPECS.iter() {
-        assert!(
-            registry.get(name).is_some(),
-            "{name} 必须仍在默认注册表里"
-        );
+        assert!(registry.get(name).is_some(), "{name} 必须仍在默认注册表里");
     }
 }
 
