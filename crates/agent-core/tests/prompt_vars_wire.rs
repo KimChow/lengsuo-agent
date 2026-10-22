@@ -109,14 +109,24 @@ fn write_identity_file(rt: &Runtime, name: &str, body: &str) {
     std::fs::write(dir.join(name), body).expect("identity file");
 }
 
-/// 1. 字段全覆盖：`prompt_vars()` 里每个变量键都必须**显式赋值**。
+/// 1. 字段全覆盖：`prompt_vars()` 里 `PromptVars` 的**每个字段**都必须显式赋值。
 ///
 /// 用源码文本扫描而非锁字段总数（仓内共识：只守关系，不锁数量）：
-/// 遍历 `PROMPT_VAR_KEYS`（模板键全集），逐个断言其出现在构造函数里；
-/// 并以「不得有 `..PromptVars::default()`」兜住「漏字段被默认值掩盖」。
+/// - 字段清单从 `agent-prompts` 的**结构体定义**里抽（不是 `PROMPT_VAR_KEYS`——
+///   键表与字段表是两回事，新增字段漏挂键时键表不会变）；
+/// - 匹配按「整行字段名 + 冒号」，避免 `user:` 被 `memory_user:` 顶替；
+/// - 并以「不得有 `..PromptVars::default()`」兜住「漏字段被默认值掩盖」。
 #[test]
-fn prompt_vars_explicitly_assigns_every_key() {
+fn prompt_vars_explicitly_assigns_every_field() {
     const CONTEXT_SRC: &str = include_str!("../src/runtime/context.rs");
+    const MODEL_SRC: &str = include_str!("../../agent-prompts/src/model.rs");
+
+    let fields = prompt_vars_fields(MODEL_SRC);
+    assert!(
+        !fields.is_empty(),
+        "必须能从 model.rs 抽出 PromptVars 的字段清单"
+    );
+
     let start = CONTEXT_SRC
         .find("fn prompt_vars(")
         .expect("context.rs 必须保留 prompt_vars()");
@@ -130,12 +140,41 @@ fn prompt_vars_explicitly_assigns_every_key() {
         !body.contains("..PromptVars::default()"),
         "prompt_vars() 不得再用 ..PromptVars::default() 掩盖未接线字段"
     );
-    for key in agent_prompts::PROMPT_VAR_KEYS {
+    for field in &fields {
         assert!(
-            body.contains(&format!("{key}:")),
-            "PromptVars 字段 `{key}` 未在 prompt_vars() 中显式赋值"
+            body.contains(&format!("\n            {field}:")),
+            "PromptVars 字段 `{field}` 未在 prompt_vars() 中显式赋值"
         );
     }
+
+    // 键表与字段表必须一致：键表漏挂字段时，模板侧会静默拿不到该变量。
+    for key in agent_prompts::PROMPT_VAR_KEYS {
+        assert!(
+            fields.iter().any(|field| field == key),
+            "PROMPT_VAR_KEYS 的 `{key}` 在 PromptVars 里没有对应字段"
+        );
+    }
+}
+
+/// 从 `model.rs` 的 `PromptVars` 结构体定义里抽出字段名。
+///
+/// 只认「行首缩进 + `pub <名字>:<类型>,`」的字段声明行；文档注释与 `pub struct` 头跳过。
+fn prompt_vars_fields(model_src: &str) -> Vec<String> {
+    let start = model_src
+        .find("pub struct PromptVars {")
+        .expect("model.rs 必须定义 PromptVars");
+    let rest = &model_src[start..];
+    let end = rest.find("\n}").expect("PromptVars 结构体必须闭合");
+    rest[..end]
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim().trim_end_matches(',');
+            let name = line.strip_prefix("pub ")?;
+            // `pub name: Type` —— 冒号前是字段名，其后是类型。
+            let name = name.split(':').next()?.trim();
+            (!name.is_empty() && !name.contains(' ')).then(|| name.to_string())
+        })
+        .collect()
 }
 
 /// 2. `product_name` 有值 ⇒ 渲染「## 产品身份」段。
@@ -224,12 +263,17 @@ fn missing_product_json_degrades_to_empty_without_panic() {
     );
 }
 
-/// 7. 身份文件正文与路径来自 agent-memory 既有的身份目录口径
+/// 7. 身份四文件落在 agent-memory 既有的身份目录口径
 ///    （`<home>/identity`，`MemoryPaths::identity_dir()`），不另造目录约定。
 ///
-/// 路径/正文只在 `identity_mode` 声明时才渲染，因此本测试直接断言
-/// 「文件确实落在既有读取位置」：写入后再次读取不报错，且 onboarding 之外的
-/// 回合不受影响（身份模式本卡不猜值）。
+/// 两条断言各有分工：
+/// - **目录口径**：四文件写在 `MemoryPaths::identity_dir()` 下 ⇒ 运行时读得到
+///   （读不到的话 SOUL 段会是空的，`<identity_context>` 也永远不出现）；
+/// - **`identity_mode` 未声明 ⇒ 身份段不渲染**（D3 定死空串，不猜值）。
+///
+/// 身份**正文与路径**本身由 `product_vars.rs` 的单元测试断言
+/// （`runtime_product_vars_reads_bodies_paths_and_product_config`）——
+/// `identity_mode` 为空时它们在主模板里没有落点，只有变量层能观测。
 #[test]
 fn identity_files_live_in_memory_identity_dir() {
     let (capture, rt) = runtime("identity");
@@ -246,7 +290,12 @@ fn identity_files_live_in_memory_identity_dir() {
         );
     }
 
+    // SOUL 正文走既有 `read_identity`（不经 identity_mode）⇒ 必进 prompt。
     let prompt = prompt_after_turn(&rt, &capture, "你好");
+    assert!(
+        prompt.contains("人格正文"),
+        "SOUL.md 正文必须经既有身份层读取进入提示词:\n{prompt}"
+    );
     assert!(
         !prompt.contains("<identity_context>"),
         "identity_mode 未声明（空串）⇒ 身份段不渲染:\n{prompt}"

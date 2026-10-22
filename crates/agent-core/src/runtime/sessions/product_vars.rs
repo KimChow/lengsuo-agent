@@ -8,12 +8,21 @@
 //! - **身份四文件**：复用 `agent-memory` 的身份目录口径
 //!   （[`MemoryPaths::identity_dir`] = `<home>/identity`，`home` = `<workdir>/.lengsuo`），
 //!   文件名 `SOUL.md` / `IDENTITY.md` / `USER.md` / `BOOTSTRAP.md`。
-//!   其中 `SOUL.md` / `USER.md` / `AI_NAME` 的正文读取已有既有实现
+//!   其中 `SOUL.md` 与 `AI_NAME` 的正文读取已有既有实现
 //!   （`agent_memory::MemoryEngine::read_identity`，`context.rs` 继续复用）；
 //!   本模块只补**其余文件的正文与四个路径**。
 //! - **产品配置**：`<home>/product.json`。仓内尚未创建该文件；本卡只定义读取口径
 //!   与缺文件时的显式降级（缺文件 / 解析失败 / 字段缺失 ⇒ 空串或 `false`）。
 //!   字段为 snake_case：`product_name` / `data_folder_name` / `is_windows`。
+//!
+//! ## `USER.md` 的两义（须知）
+//!
+//! `agent-memory` 把 `USER.md` 当**用户名文件**读（`agent-memory/src/identity.rs:33`
+//! 的 `USER_NAME_FILE`，内容即称呼本身）；本模块把同一个文件当**用户画像正文**
+//! 读（`PromptVars::user`）。两者不冲突于磁盘（同一路径），但语义不同：
+//! 变量 `user_name` 是「称呼」、`user` 是「档案正文」。卡面 D1 明确 `user` ← `USER.md`，
+//! 故本卡照此接线；若后续身份卡决定把画像正文另立文件（如 `USER_PROFILE.md`），
+//! 只需改本模块的 `USER_FILE` 常量。
 //!
 //! ## 降级口径
 //!
@@ -132,4 +141,141 @@ fn read_text(path: &Path) -> String {
 /// 路径的展示文本（不脱敏：路径不是凭据）。
 fn path_text(path: &Path) -> String {
     path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 临时目录（自带随机后缀，测试间不互扰）。
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("product-vars-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("临时目录");
+        dir
+    }
+
+    #[test]
+    fn product_config_reads_declared_fields() {
+        let dir = temp_dir("config");
+        let file = dir.join(PRODUCT_FILE);
+        std::fs::write(
+            &file,
+            r#"{"product_name":"澜枢平台","data_folder_name":"Lengsuo","is_windows":true}"#,
+        )
+        .expect("写 product.json");
+
+        let config = read_product_config(&dir);
+        assert_eq!(config.product_name, "澜枢平台");
+        assert_eq!(config.data_folder_name, "Lengsuo");
+        assert!(config.is_windows);
+    }
+
+    #[test]
+    fn missing_or_malformed_product_config_degrades_to_defaults() {
+        let dir = temp_dir("degrade");
+
+        // 缺文件 ⇒ 缺省值（空串 / false），不 panic。
+        let missing = read_product_config(&dir);
+        assert_eq!(missing.product_name, "");
+        assert_eq!(missing.data_folder_name, "");
+        assert!(!missing.is_windows);
+
+        // 非 JSON ⇒ 缺省值。
+        let file = dir.join(PRODUCT_FILE);
+        std::fs::write(&file, "not json at all").expect("写坏 JSON");
+        let malformed = read_product_config(&dir);
+        assert_eq!(malformed.product_name, "");
+        assert!(!malformed.is_windows);
+
+        // 字段类型不符 ⇒ 缺省值（字符串不当作 bool，整数不当作 string）。
+        std::fs::write(&file, r#"{"product_name":42,"is_windows":"true"}"#).expect("写错类型");
+        let wrong_types = read_product_config(&dir);
+        assert_eq!(wrong_types.product_name, "");
+        assert!(!wrong_types.is_windows);
+    }
+
+    #[test]
+    fn identity_bodies_are_read_and_paths_point_at_the_files() {
+        let dir = temp_dir("identity");
+        let identity = dir.join("identity");
+        std::fs::create_dir_all(&identity).expect("身份目录");
+        for (name, body) in [
+            (SOUL_FILE, "人格正文"),
+            (IDENTITY_FILE, "身份正文"),
+            (USER_FILE, "用户画像正文"),
+            (BOOTSTRAP_FILE, "引导正文"),
+        ] {
+            std::fs::write(identity.join(name), body).expect("写身份文件");
+        }
+
+        assert_eq!(read_text(&identity.join(IDENTITY_FILE)), "身份正文");
+        assert_eq!(read_text(&identity.join(USER_FILE)), "用户画像正文");
+        assert_eq!(read_text(&identity.join(BOOTSTRAP_FILE)), "引导正文");
+        assert_eq!(
+            path_text(&identity.join(SOUL_FILE)),
+            identity.join(SOUL_FILE).display().to_string()
+        );
+    }
+
+    #[test]
+    fn unreadable_identity_file_degrades_to_empty_without_panic() {
+        let dir = temp_dir("unreadable");
+        // 用目录占住文件位置 ⇒ 读文件必然失败（IsADirectory）。
+        std::fs::create_dir_all(dir.join(IDENTITY_FILE)).expect("占位目录");
+
+        assert_eq!(read_text(&dir.join(IDENTITY_FILE)), "");
+        assert_eq!(read_text(&dir.join("NO_SUCH_FILE.md")), "");
+    }
+
+    /// 端到端：真实 `Runtime` 取值 ⇒ 正文与路径都落到 `ProductVars`。
+    ///
+    /// 集成测试只观测得到「渲染进 prompt 的部分」；`identity_mode` 未声明时
+    /// 身份段整段不渲染，故身份正文/路径必须在这里断言（它们确实取到了值）。
+    #[test]
+    fn runtime_product_vars_reads_bodies_paths_and_product_config() {
+        use std::sync::Arc;
+
+        use crate::provider::EchoProvider;
+
+        let workdir = temp_dir("runtime");
+        let home = workdir.join(".lengsuo");
+        let identity_dir = home.join("identity");
+        std::fs::create_dir_all(&identity_dir).expect("身份目录");
+        std::fs::write(identity_dir.join(SOUL_FILE), "人格正文").expect("SOUL");
+        std::fs::write(identity_dir.join(IDENTITY_FILE), "身份正文").expect("IDENTITY");
+        std::fs::write(identity_dir.join(USER_FILE), "用户画像正文").expect("USER");
+        std::fs::write(identity_dir.join(BOOTSTRAP_FILE), "引导正文").expect("BOOTSTRAP");
+        std::fs::write(
+            home.join(PRODUCT_FILE),
+            r#"{"product_name":"澜枢平台","data_folder_name":"Lengsuo","is_windows":true}"#,
+        )
+        .expect("product.json");
+
+        let rt = crate::runtime::Runtime::builder()
+            .workdir(&workdir)
+            .provider(Arc::new(EchoProvider))
+            .build()
+            .expect("runtime");
+
+        let vars = rt.product_vars(&workdir.display().to_string());
+
+        assert_eq!(vars.product_name, "澜枢平台");
+        assert_eq!(vars.data_folder_name, "Lengsuo");
+        assert!(vars.is_windows);
+        assert_eq!(vars.identity, "身份正文");
+        assert_eq!(vars.user, "用户画像正文");
+        assert_eq!(vars.bootstrap, "引导正文");
+        // 四个路径都指向既有身份目录（`MemoryPaths::identity_dir()`）。
+        let expected_dir = identity_dir.display().to_string();
+        assert_eq!(vars.soul_path, format!("{expected_dir}/{SOUL_FILE}"));
+        assert_eq!(
+            vars.identity_path,
+            format!("{expected_dir}/{IDENTITY_FILE}")
+        );
+        assert_eq!(vars.user_path, format!("{expected_dir}/{USER_FILE}"));
+        assert_eq!(
+            vars.bootstrap_path,
+            format!("{expected_dir}/{BOOTSTRAP_FILE}")
+        );
+    }
 }
