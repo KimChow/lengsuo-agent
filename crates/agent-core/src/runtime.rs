@@ -227,6 +227,7 @@ mod approvals;
 mod bus;
 mod execute;
 mod internals;
+pub mod retry_policy;
 mod sessions;
 mod skills;
 mod task_tools;

@@ -309,9 +309,9 @@ impl Runtime {
         }
         let context = self.build_turn_context(&session, history, user_text);
         let batch = if options.tool_choice == ToolChoice::None {
-            self.provider.next_steps_with_options(&context, options)?
+            self.call_provider_with_retry(&context, Some(options), events)?
         } else {
-            self.provider.next_steps_with_context(&context)?
+            self.call_provider_with_retry(&context, None, events)?
         };
         self.record_provider_usage(id, events)?;
 
