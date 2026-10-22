@@ -34,6 +34,43 @@ pub const ACP_METHODS: &[&str] = &[
     "elicitation/complete",       // agent-acp method::ELICITATION_COMPLETE
 ];
 
+/// ACP **任务族方法名**（27 册 §2「ACP 任务」），共 4 项——与 `agent-acp` 的
+/// `tasks::method` 模块**逐项对齐**。
+///
+/// 真相来源：`crates/agent-acp/src/tasks.rs` 的 `pub mod method`（4 个
+/// `pub const`）。
+///
+/// # 为什么**单独**成一个常量，不并入 [`ACP_METHODS`]
+///
+/// 1. [`ACP_METHODS`] 现有 13 项是 §3 标准方法族，`tests/method_ledger.rs` 等
+///    多处按 13 项锚定；并入会让既有断言在**本卡这种正当扩充**时必红，属
+///    「跨卡锁死取值」的已知反模式。
+/// 2. `tasks/*` 是 27 册 §2 的**独立方法族**，与 §3 的标准方法族分层登记，
+///    归属更清晰。
+///
+/// # 证据等级：**只到方法名**
+///
+/// 27/19/18 册对四方法**仅实证到方法名一级**，字段层证据缺失。本常量因此
+/// **只登记方法名**，不声明任何参数/结果字段——「宁可缺、不许编」。
+///
+/// # 断言口径（`tests/tasks_method_surface.rs`，**只守关系、不锁数量**）
+///
+/// 源码文本扫描 `tasks.rs`（`agent-acp` 不是本 crate 的依赖，`Cargo.toml` 属
+/// 共享区、本卡不得改 ⇒ 只能扫文本）断言：**实现面 == 登记面**（双向差集）、
+/// **`methods.rs` + `tasks.rs` 的每个 `pub const …: &str` 都已登记**（类级反
+/// 裸奔）、**本常量 ∩ [`ACP_METHODS`] == ∅**、**族内无重复**、**每项以
+/// `"tasks/"` 开头**。
+///
+/// ⚠️ **不锁数量/取值**：下一张卡正当新增一个 `tasks/xxx` 时，把新方法登记进
+/// 本常量即可；任何 `assert_eq!(ACP_TASKS_METHODS.len(), 4)` 之类的断言都会在
+/// 正当扩充时必红。
+pub const ACP_TASKS_METHODS: &[&str] = &[
+    "tasks/list",   // agent-acp tasks::method::TASKS_LIST
+    "tasks/get",    // agent-acp tasks::method::TASKS_GET
+    "tasks/cancel", // agent-acp tasks::method::TASKS_CANCEL
+    "tasks/result", // agent-acp tasks::method::TASKS_RESULT
+];
+
 /// ACP **通知方法面**（单向、无响应）——[`ACP_METHODS`] 的**子集**。
 ///
 /// ACP 方法分两种**帧形状**（JSON-RPC 2.0）：**请求-响应**
