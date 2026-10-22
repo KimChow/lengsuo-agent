@@ -28,7 +28,7 @@ import uuid
 from pathlib import Path
 
 from card_ledger import LedgerError, atomic_write, read_json_strict
-from card_rules import worktree_fingerprint
+from card_rules import ROOT, worktree_fingerprint
 
 VERIFY_TIMEOUT = 300.0
 _TASK = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
