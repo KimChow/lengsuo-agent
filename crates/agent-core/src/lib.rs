@@ -11,6 +11,7 @@ pub mod credentials;
 pub mod error;
 pub mod event_log;
 pub mod executor;
+pub mod fs_adapter;
 pub mod host;
 #[allow(clippy::module_inception)]
 pub mod r#loop;
@@ -23,6 +24,9 @@ pub mod runtime;
 pub mod schema;
 pub mod sensitive;
 pub mod tool;
+pub mod tool_exec_wiring;
+pub mod tool_web;
+pub mod web_adapter;
 pub mod workspace_read;
 
 pub use credentials::{CredentialError, StoreCredentialResolver, CRED_REF_SCHEME};

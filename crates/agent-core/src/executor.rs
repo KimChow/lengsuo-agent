@@ -359,9 +359,16 @@ pub const TASK_TOOL_PREFIX: &str = "task.";
 /// 组合装配的绑定顺序表（装配契约的单一来源，供文档与测试引用）。
 ///
 /// 顺序即优先级：精确名 `shell.exec` 与 `task.` 前缀互不重叠，顺序只影响未来扩展。
+///
+/// ⛔ 本表描述的是 [`Runtime::install_builtin_tools`] 的**两族**装配
+/// （`task.` + `shell.exec`），**不含** `fs.` / `web.fetch`——那两族由
+/// [`crate::tool_exec_wiring::Runtime::install_all_tools`] 装。四族的完整
+/// 顺序表见 [`crate::tool_exec_wiring::TOOL_BINDING_TABLE`]；本表从它派生
+/// ⇒ 描述文本只有一份。
 pub fn builtin_tool_bindings() -> BTreeMap<&'static str, &'static str> {
-    BTreeMap::from([
-        ("task.", "task.* 工具族（会话作用域）"),
-        (EXEC_TOOL_NAME, "exec 沙箱链"),
-    ])
+    crate::tool_exec_wiring::TOOL_BINDING_TABLE
+        .iter()
+        .filter(|(key, _)| *key == TASK_TOOL_PREFIX || *key == EXEC_TOOL_NAME)
+        .map(|(key, description)| (*key, *description))
+        .collect()
 }

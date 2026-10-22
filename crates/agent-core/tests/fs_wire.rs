@@ -6,15 +6,14 @@
 //! ⇒ 本文件**不**断言 `default_registry()` 含 `fs.*`：那一条由汇总卡守，
 //! 本卡若也断言就会在汇总卡合入前必然变红。
 //!
-//! 挂载方式：本卡不改 `lib.rs`（模块声明不在本卡落点内），故用 `#[path]` 直接挂载
-//! 两个源文件；`crate::tool` / `crate::r#loop` 由 `pub use` 转发到 `agent_core`，
+//! 挂载方式：`fs_adapter.rs` **已在 crate 本体**（`lib.rs` 的 `pub mod
+//! fs_adapter;`）⇒ 这里直接引 `agent_core::fs_adapter::…`，验的是**本体**而不是
+//! 影子副本。`tool_fs.rs` 仍未进 crate（属 `x-fs-wire` 的落点，本卡不改），故
+//! 仍用 `#[path]` 就地挂载；`crate::tool` 由 `pub use` 转发到 `agent_core`，
 //! 与库内构建解析到**同一**模块与 trait（不是另造一份定义）。
 
-pub use agent_core::r#loop;
 pub use agent_core::tool;
 
-#[path = "../src/fs_adapter.rs"]
-pub mod fs_adapter;
 #[path = "../src/tool_fs.rs"]
 pub mod tool_fs;
 
@@ -26,8 +25,8 @@ use std::sync::OnceLock;
 use serde_json::json;
 use tempfile::TempDir;
 
+use agent_core::fs_adapter::FsToolExecutor;
 use agent_core::tool::ToolKind;
-use fs_adapter::FsToolExecutor;
 use tool_fs::tool_specs;
 
 /// 全部六个文件能力名（含 `fs.delete`）——注册面覆盖读/写两类。
