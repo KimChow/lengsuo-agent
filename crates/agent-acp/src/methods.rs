@@ -163,6 +163,7 @@ pub enum StopReason {
 
 /// `session/prompt` 响应结果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PromptResult {
     /// 回合停止原因。
     pub stop_reason: StopReason,
