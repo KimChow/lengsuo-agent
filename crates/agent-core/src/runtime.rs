@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,7 +26,8 @@ use crate::event_log::{EventLog, JsonlEventLog};
 use crate::host::HostServices;
 use crate::permission::PermissionGate;
 use crate::provider::{Provider, TurnContext};
-use crate::r#loop::ToolExecutor;
+use crate::r#loop::cancel::{self, CancelSignal};
+use crate::r#loop::{CancellableToolExecutor, ToolExecutor};
 use crate::redact::Redactor;
 use crate::schema::{Event, Isolation, Message, Mode, PermissionMode, Session, SessionStatus};
 
@@ -198,17 +199,30 @@ impl Runtime {
     /// endpoint must acknowledge immediately even when finalizers are slow」。
     /// 本方法不等回合结算、也不改 `SessionStatus`（与 [`Runtime::stop_session`]
     /// 是两个并存的动作）；回合在**下一步开头**观察到标志后收口。
+    ///
+    /// 取消经 [`CancelSignal::cancel`] 置位：除标志本身外还唤醒进程级唤醒总线，
+    /// 在途工具（`CancellableToolExecutor` 的 `wait_cancelled` 等待者）因此
+    /// 立即被打断，无需轮询。
     pub fn cancel_session(&self, id: Uuid) -> Result<Session, CoreError> {
-        let guard = self.sessions.lock().expect("会话表锁不得毒化");
-        let Some(hot) = guard.get(&id) else {
-            return Err(CoreError::SessionNotFound(id));
-        };
-        hot.cancel.store(true, Ordering::SeqCst);
-        Ok(hot.session.clone())
+        CancelSignal::from_flag(self.cancel_flag(id)?).cancel();
+        self.get_session(id)
     }
 
     /// 会话的取消令牌（回合开始/结束由 `turns.rs` 复位；跨线程共享）。
+    ///
+    /// 顺带做回合起点的陈旧扫描（[`Runtime::settle_stale_tool_calls`] 的自动
+    /// 对应物）：这里既被 `run_turn` 在回合起点调用，也被 `approvals.rs` 的
+    /// `session_halted` 在回合中途调用。扫描范围**只到本回合的 user 消息为止**，
+    /// 在途调用在它之后 ⇒ 中途调用是空操作，不会把结果错配到在途调用上。
     pub(super) fn cancel_token(&self, id: Uuid) -> Result<Arc<AtomicBool>, CoreError> {
+        let token = self.cancel_flag(id)?;
+        self.settle_previous_turn_tool_calls(id)?;
+        Ok(token)
+    }
+
+    /// 会话的取消标志（只读、无副作用；`cancel_token` 在其上叠加回合起点的
+    /// 陈旧扫描，`approvals.rs` 的 `session_halted` 等只读判定走本入口）。
+    fn cancel_flag(&self, id: Uuid) -> Result<Arc<AtomicBool>, CoreError> {
         let guard = self.sessions.lock().expect("会话表锁不得毒化");
         guard
             .get(&id)
@@ -216,10 +230,43 @@ impl Runtime {
             .ok_or(CoreError::SessionNotFound(id))
     }
 
+    /// 会话的取消信号（与 [`Runtime::cancel_session`] 写的是同一把标志，
+    /// 复用回合开始的复位语义；执行期间经 `execute.rs` 交给可取消执行器）。
+    pub fn cancel_signal(&self, id: Uuid) -> Result<CancelSignal, CoreError> {
+        Ok(CancelSignal::from_flag(self.cancel_flag(id)?))
+    }
+
+    /// 给会话装**可取消执行器**（第二槽位；与 [`Runtime::set_tool_executor`]
+    /// 并存，后写胜出）。
+    ///
+    /// 为什么按会话登记：`Runtime` / `HotSession` 由本卡边界外的
+    /// `builder.rs` / `sessions.rs` 穷尽字面量构造，不能加字段；trait 对象
+    /// 下转型需要 `ToolExecutor: Any`（本卡禁止改契约）。故第二槽位落在
+    /// `loop/cancel.rs` 的进程级登记表上。实现见该表注释。
+    pub fn set_cancellable_executor(&self, id: Uuid, executor: Arc<dyn CancellableToolExecutor>) {
+        cancel::set_session_cancellable(id, executor);
+    }
+
+    /// 当前会话的可取消执行器（观测面；工具步的执行器选择点）。
+    pub fn cancellable_executor(&self, id: Uuid) -> Option<Arc<dyn CancellableToolExecutor>> {
+        cancel::session_cancellable(id)
+    }
+
+    /// 本回合是否有工具被取消打断（`abortedTools` 口径）。
+    ///
+    /// 口径在 `loop::cancel::turn_had_aborted_tools`（历史派生：从最后一条 user
+    /// 消息之后按 ToolCall / ToolResult 成对扫描），本方法只取会话并转发。
+    pub fn turn_had_aborted_tools(&self, id: Uuid) -> Result<bool, CoreError> {
+        let session = self.get_session(id)?;
+        Ok(cancel::turn_had_aborted_tools(&session.messages))
+    }
+
     /// 取消标志的当前值（生命周期单元测试的观测面）。
     #[cfg(test)]
     fn cancel_requested(&self, id: Uuid) -> Result<bool, CoreError> {
-        Ok(self.cancel_token(id)?.load(Ordering::SeqCst))
+        Ok(self
+            .cancel_token(id)?
+            .load(std::sync::atomic::Ordering::SeqCst))
     }
 }
 

@@ -40,6 +40,7 @@
 //! `guard`（白名单与规划门禁处理）、`support`（共用小工具）、`runtime_step`（两条驱动
 //! 路径的适配面：历史装载、消息落地、provider 调用与工具结算分发）。
 
+pub mod cancel;
 mod guard;
 mod run;
 mod runtime_step;
@@ -54,9 +55,10 @@ use crate::mode::ModePolicy;
 use crate::runtime::Runtime;
 use crate::schema::{Event, Mode};
 
+pub use cancel::{CancelSignal, CANCEL_GRACE_MS, CANCEL_HARD_LIMIT_MS};
 pub use types::{
-    ChatProvider, ChatTurn, LoopLimits, LoopOutcome, LoopStatus, PlanGate, ToolCall, ToolExecutor,
-    DEFAULT_MAX_STEPS, MAX_STEPS_PROMPT,
+    CancellableToolExecutor, ChatProvider, ChatTurn, LoopLimits, LoopOutcome, LoopStatus, PlanGate,
+    ToolCall, ToolExecutor, DEFAULT_MAX_STEPS, MAX_STEPS_PROMPT,
 };
 
 /// 一步的执行面：要么交给已建好的 [`Runtime`]，要么由本层自驱。
