@@ -686,3 +686,9 @@ pub const ACP_JSONRPC_ERROR_OBJECT_KEYS: &[&str] = &["code", "message", "data"];
 pub const GATEWAY_ENVELOPE_KEYS: &[&str] = &["code", "msg", "data"];
 /// `jsonrpc` 字段的线上取值（由 `JsonRpcVersion` 的自定义 `Deserialize` 硬保证）。
 pub const ACP_JSONRPC_VERSION: &str = "2.0";
+
+/// ACP **出站**通知方法面（host → client 主动推的 method 名）。口径 = 本仓 `notify(...)` 调用点传入的 method 字面量。
+/// 断言见 `tests/acp_outbound_notification.rs`（只守关系，不锁数量/取值）；生产侧 `notify()` 签名是自由字符串（`impl Into<String>`），本身不构成一个面。
+pub const ACP_OUTBOUND_NOTIFICATION_METHODS: &[&str] = &[
+    "session/update", // notify("session/update")：host 主动推的增量通知
+];
