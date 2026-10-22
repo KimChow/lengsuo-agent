@@ -14,6 +14,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+// 12 个域工具的 spec 汇总在独立文件里（`tool.rs` 接近 400 行软上限）。
+// `lib.rs` 属共享区、本卡不可改，故用 `#[path]` 就地声明模块；lib.rs 解禁后
+// 改成顶层 `pub mod tool_registry_specs;` 即可，调用方无须变动。
+#[path = "tool_registry_specs.rs"]
+pub mod tool_registry_specs;
+
 /// 工具类别；决定 readonly 权限模式下是否可用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -314,9 +320,12 @@ pub fn parse_memory_read_args(args: &Value) -> Result<ReadMemoryRequest, String>
 
 /// 平台内置工具的默认注册表（生产路径与测试共用同一份定义，避免两处漂移）。
 ///
-/// 先收记忆写工具四项（M1）+ 检索只读工具三项（M2）；`fs.*` / `shell.exec`
-/// 等名字的执行体状态尚未核实，由后续各领域卡追加，避免造出「已注册但执行不了」
-/// 的假象。
+/// 先收记忆写工具四项（M1）+ 检索只读工具三项（M2），再收 12 个域工具
+/// （`fs.*` / `shell.exec` / `task.*` / `web.fetch`，spec 见
+/// [`tool_registry_specs::all_tool_specs`]）——合计 19 个。
+///
+/// 注册只决定「权限门认不认这个名字」；执行体是否已接入由各域卡负责，
+/// 未接入时调用会得到可读的「无可用执行器」错误，而不是被当成未注册工具。
 pub fn default_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     for (name, description) in MEMORY_WRITE_TOOL_SPECS {
@@ -338,6 +347,9 @@ pub fn default_registry() -> ToolRegistry {
             sensitive_arguments: false,
             timeout_ms: 5_000,
         });
+    }
+    for spec in tool_registry_specs::all_tool_specs() {
+        registry.register(spec);
     }
     registry
 }
