@@ -216,10 +216,10 @@ impl Runtime {
             return Err(CoreError::SessionClosed(id));
         }
         let context = self.build_turn_context(&session, history, "");
-        match options {
-            Some(options) => self.provider.next_steps_with_options(&context, options),
-            None => self.provider.next_steps_with_context(&context),
-        }
+        // `chat_turn` 路径（`loop` 适配器）没有回合事件累加器：`model.retry` 事件
+        // 仍落持久日志（durable），但不进任何 receipt（该路径本就不产出 receipt）。
+        let mut retry_events = Vec::new();
+        self.call_provider_with_retry(&context, options, &mut retry_events)
     }
 
     /// 结算**一次**工具调用（缺口 B1：`with_runtime` 路径的工具由 Runtime 执行）。
