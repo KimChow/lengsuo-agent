@@ -4,6 +4,8 @@
 //! 不依赖 tokio 或任何 IO 框架；网关层负责运行时与网络。
 //! 规格源：worktree 根 `AGENT-KICKOFF.md` §3–§5。
 
+#![forbid(unsafe_code)]
+
 pub mod blobs;
 pub mod bus;
 pub mod config;
