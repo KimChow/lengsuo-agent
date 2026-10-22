@@ -161,19 +161,39 @@ impl Runtime {
     /// 读的是 **durable 事件**（`skill_injected`），不是内存态：进程重启后
     /// 注入段仍在（事件日志是权威面，消息只是它的投影）。
     pub(super) fn skill_segments(&self, id: Uuid) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
+        self.skill_injected_payloads(id)
+            .iter()
+            .filter_map(|payload| payload.get("content").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// 本会话已注入的技能名（去重）。
+    ///
+    /// 上下文构建时用它判重：每个技能每会话**只注入一次**（durable 事件是
+    /// 幂等判据，进程重启后依然成立），后续构建只回放、不重复落事件。
+    pub(super) fn injected_skill_names(&self, id: Uuid) -> BTreeSet<String> {
+        self.skill_injected_payloads(id)
+            .iter()
+            .filter_map(|payload| payload.get("skill").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// 回放 `skill_injected` 事件载荷（分页，保持注入顺序）。
+    ///
+    /// 回放失败（`Err`）⇒ 返回已读到的部分；调用方据此「宁可不注入/不判重，
+    /// 也不注入半截正文」。
+    fn skill_injected_payloads(&self, id: Uuid) -> Vec<Value> {
+        let mut out: Vec<Value> = Vec::new();
         let mut after = 0u64;
-        // 回放失败（`Err`）⇒ 本次不注入技能段：宁可不注入，也不注入半截正文。
         while let Ok(page) = self.event_log().replay(id, after, DEFAULT_PAGE_LIMIT) {
             if page.is_empty() {
                 break;
             }
             for event in &page {
-                if event.kind != SKILL_INJECTED_EVENT {
-                    continue;
-                }
-                if let Some(content) = event.payload.get("content").and_then(Value::as_str) {
-                    out.push(content.to_string());
+                if event.kind == SKILL_INJECTED_EVENT {
+                    out.push(event.payload.clone());
                 }
             }
             if page.len() < DEFAULT_PAGE_LIMIT {
