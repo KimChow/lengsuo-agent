@@ -234,6 +234,7 @@ mod tasks;
 mod tool_result;
 mod turns;
 mod turns_settle;
+pub mod usage_log;
 
 pub use skills::{SkillInjection, SKILL_CONTENT_NOTICE, SKILL_INJECTED_EVENT};
 // 技能注入面的宿主侧类型（`agent-skills` 的目录入口与调用来源）在此**再导出**：
