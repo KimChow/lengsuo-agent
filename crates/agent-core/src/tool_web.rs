@@ -40,7 +40,7 @@ pub const WEB_FETCH_BODY_BYTES: usize = 4 * WEB_FETCH_MAX_BYTES;
 pub const WEB_FETCH_DESCRIPTION: &str = concat!(
     "抓取指定 http/https 地址的网页正文并转成纯文本返回。",
     "参数 url（必填，http/https 完整地址）。",
-    "失败时以显式错误返回（不返回空串、不静默吞掉）：",
+    "失败 ⇒ 以显式错误返回（不返回空串、不静默吞掉）：",
     "地址非法或不是 http/https 协议、响应非 2xx、网络不可达、超过 30 秒超时，都会说明失败原因。",
     "能力边界：只读抓取——不提交表单、不带凭据登录、不执行页面脚本；",
     "响应体有 256 KiB 上限，超限会显式截断并注明；",
