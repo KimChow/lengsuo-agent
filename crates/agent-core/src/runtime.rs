@@ -232,6 +232,7 @@ mod skills;
 mod task_tools;
 mod tasks;
 mod tool_result;
+pub mod turn_queue;
 mod turns;
 mod turns_settle;
 pub mod usage_log;

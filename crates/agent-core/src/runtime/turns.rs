@@ -1,7 +1,8 @@
 //! 回合执行：send_text（单队列投递）、run_turn（步驱循环）、单步原语
 //! [`Runtime::step`](StepOutcome)；结算与记账一族在 `turns_settle.rs`
 //! （纯搬移、零行为变更），本文件只保留回合政策：投递、步循环、逐步分派与
-//! `done` 收口。
+//! `done` 收口。投递面的两层语义（steer 插话 / queue 排队 / owner 过期判定）
+//! 在 `turn_queue.rs`。
 //!
 //! 步语义：一步 = 一次逻辑 LLM 调用。
 //! - 用户输入本身也是一条 durable 事件（金标 `session-event` 的 user 消息
@@ -84,23 +85,14 @@ impl Runtime {
     ///
     /// 单队列投递：同一会话的回合串行执行；后到的输入在回合之外排队，
     /// 不插入进行中的步驱循环。
+    ///
+    /// 投递面（落 user 消息 + 发 user 事件 + **回合边界队列项**的取用）在
+    /// `turn_queue.rs`：本方法只负责取会话投递锁并把整段投递交出去；回合中
+    /// 的插话（steer）与回合后的排队（queue）由该模块的队列承接。
     pub fn send_text(&self, id: Uuid, text: &str) -> Result<TurnReceipt, CoreError> {
         let drain = self.drain_lock(id)?;
         let _queued = drain.lock().expect("会话投递锁不得毒化");
-        // 首步 history 取本轮输入推入之前的快照（本轮输入只作为 user_text 出现）。
-        let history = self.get_session(id)?.messages;
-        // 脱敏只做一次：`emit` 内部还会再过一次 `redact_json`，若此处先脱敏，
-        // 事件 text 与历史消息 content 才逐字同一（否则敏感片段被改两次）。
-        let redacted = self.redact(text);
-        // 一次时钟读数同时用于消息与事件 payload：消息时间因此随事件落盘
-        // （`replay_message` 优先取 `payload.tsMs`），重启前后逐条相等。
-        let ts = self.turn_ts();
-        let session = self.push_message(id, Role::User, redacted.clone(), None, ts)?;
-        // 用户输入本身也是一条 durable 事件（金标 `session-event` 的 user 消息投影：
-        // `InboxDelivered` 是会话事件面上的首条，投影出 user 消息）。顺序：消息先落、
-        // 事件随后，且事件必须是回合事件面的第一条，否则 receipt ≡ 持久日志会破。
-        let event = self.emit(&session, "user", json!({ "text": redacted, "tsMs": ts }))?;
-        self.run_turn(id, text, &history, event)
+        self.deliver_and_run(id, text)
     }
 
     /// 取会话投递锁（同一会话的回合据此串行，不穿插步边界）。
@@ -121,7 +113,7 @@ impl Runtime {
     /// `first_event` 是 `send_text` 已在消息落盘后发布的 `user` 事件：它是
     /// 回合事件面的第一条（金标 `session-event` 的 user 消息投影），必须进
     /// [`TurnReceipt::events`]，否则 receipt 与持久日志的 seq 逐项相等会破。
-    fn run_turn(
+    pub(super) fn run_turn(
         &self,
         id: Uuid,
         text: &str,
@@ -156,6 +148,8 @@ impl Runtime {
                 self.settle_cancelled(id, &mut events, steps, turn_start)?;
                 break;
             }
+            // 步边界取一次插话队列项（steer 的消费点）：注入进历史 ⇒ 本步可见。
+            self.consume_steer(id, &mut events)?;
             let outcome = if steps >= max_turn_steps {
                 // 到限不硬停：走一次缴械步（toolChoice=none 的纯文本总结步）。
                 self.surrender_step(id, &mut denied_tools, &mut write_executed, &mut events)?
