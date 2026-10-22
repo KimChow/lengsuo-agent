@@ -319,6 +319,7 @@ impl Runtime {
         } else {
             self.provider.next_steps_with_context(&context)?
         };
+        self.record_provider_usage(id, events)?;
 
         let Some((name, args)) = self.consume_step(id, &session, batch, events)? else {
             return Ok(if options.tool_choice == ToolChoice::None {
