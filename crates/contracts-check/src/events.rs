@@ -27,3 +27,15 @@ pub const EVENT_KINDS: &[&str] = &[
     "session_update",    // agent-core EventKind::SessionUpdate
     "user", // 持久化事件 `user`（非 `agent-core::schema::EventKind` 变体，见常量文档注释）
 ];
+
+/// 线上事件帧的**顶层键名面**（snake_case）。
+///
+/// 真相来源三处一致：`AGENT-KICKOFF.md` 第 35 行冻结 `Event { seq, session_id,
+/// kind, payload, ts_ms }`；`agent-gateway/src/server.rs` 的真实推帧点；
+/// `lengsuo-shell/src/gateway/events.rs` 的 `GatewayEvent` 解码器（无
+/// `rename_all` ⇒ serde 按字段名原样匹配 ⇒ 只认 snake_case）。
+///
+/// 与 `KICKOFF_SCHEMA_FIELD_NAMES` 的区别：后者是 §3 的 **Rust 侧 snake_case 源
+/// 字段名**（用于「登记的线上键名不得与其相交」的反向断言），本常量是**线上帧顶层
+/// 键名本身**。两个面允许同名（`session_id` / `ts_ms`）⇒ 那条反向断言不适用于本常量。
+pub const EVENT_FRAME_KEYS: &[&str] = &["seq", "session_id", "kind", "payload", "ts_ms"];
