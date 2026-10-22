@@ -19,7 +19,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use serde_json::{json, Value};
 use uuid::Uuid;
+
+use crate::schema::{Message, Role};
 
 use super::types::CancellableToolExecutor;
 
@@ -114,6 +117,59 @@ impl Default for CancelSignal {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// 中断工具结果的固定标记（与 `TOOLS_INTERRUPTED` 同口径）：被打断的工具结果里
+/// 必有这一段，宿主据此识别「这次调用是被取消打断的」。
+const ABORTED_MARKER: &str = "\"type\":\"aborted\"";
+
+/// 取消收口的 `done` 事件载荷（**口径只有这一处**）。
+///
+/// `abortedTools` = 本回合是否有工具被取消打断：上层/模型侧据此提示「命令可能
+/// 已部分执行」。
+///
+/// 收口点（`runtime/turns_settle.rs` 的 `settle_cancelled`）用它构造 `done`
+/// 事件；本函数放在 `loop::cancel` 是因为它属取消口径而非收口口径。
+pub fn cancelled_done_payload(steps: usize, aborted_tools: bool) -> Value {
+    json!({
+        "status": "cancelled",
+        "steps": steps,
+        "abortedTools": aborted_tools,
+    })
+}
+
+/// 本回合是否有工具被取消打断（会话历史派生，**无跨回合状态**）。
+///
+/// 口径：从**最后一条 user 消息之后**起算（本回合的消息区间），按 ToolCall /
+/// ToolResult 成对扫描；配对上的结果里含中断标记 ⇒ 本回合有工具被打断。
+///
+/// 成对扫描而非「只看结果」：会话重建时补齐的**陈旧**中断结果（属于上一回合的
+/// 调用）会落在本回合区间内却配不上本回合的调用，成对扫描因此不把它算进来。
+pub fn turn_had_aborted_tools(messages: &[Message]) -> bool {
+    let bound = messages
+        .iter()
+        .rposition(|message| message.role == Role::User)
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    // 本回合尚未配对的 ToolCall 数（工具步串行，一次一个 ⇒ 计数即可配对）。
+    let mut open_calls = 0usize;
+    for message in messages.iter().skip(bound) {
+        match message.role {
+            Role::ToolCall => open_calls += 1,
+            Role::ToolResult => {
+                if open_calls == 0 {
+                    // 配不上本回合的调用（陈旧补齐的结果）⇒ 不计。
+                    continue;
+                }
+                open_calls -= 1;
+                if message.content.contains(ABORTED_MARKER) {
+                    return true;
+                }
+            }
+            Role::User | Role::Assistant => {}
+        }
+    }
+    false
 }
 
 /// 会话 → 可取消执行器（进程级登记表）。

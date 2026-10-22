@@ -252,6 +252,15 @@ impl Runtime {
         cancel::session_cancellable(id)
     }
 
+    /// 本回合是否有工具被取消打断（`abortedTools` 口径）。
+    ///
+    /// 口径在 `loop::cancel::turn_had_aborted_tools`（历史派生：从最后一条 user
+    /// 消息之后按 ToolCall / ToolResult 成对扫描），本方法只取会话并转发。
+    pub fn turn_had_aborted_tools(&self, id: Uuid) -> Result<bool, CoreError> {
+        let session = self.get_session(id)?;
+        Ok(cancel::turn_had_aborted_tools(&session.messages))
+    }
+
     /// 取消标志的当前值（生命周期单元测试的观测面）。
     #[cfg(test)]
     fn cancel_requested(&self, id: Uuid) -> Result<bool, CoreError> {

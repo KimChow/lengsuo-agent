@@ -637,3 +637,63 @@ fn interrupted_tool_marker_is_observable_in_event_stream() {
     );
     assert_eq!(marker.payload["name"], TOOL);
 }
+
+// ---------------- 9. `abortedTools` 口径 ----------------
+
+/// `done` 事件的 `abortedTools` 字段口径（取消收口载荷的唯一来源）：
+/// `abortedTools` = 本回合是否有工具被取消打断（布尔恒在，不省略）。
+/// 载荷由 `loop::cancel::cancelled_done_payload` 单点构造。
+#[test]
+fn cancelled_done_payload_carries_the_aborted_tools_flag() {
+    let hit = agent_core::r#loop::cancel::cancelled_done_payload(3, true);
+    assert_eq!(hit["status"], "cancelled");
+    assert_eq!(hit["steps"], 3);
+    assert_eq!(hit["abortedTools"], true);
+
+    let clean = agent_core::r#loop::cancel::cancelled_done_payload(1, false);
+    assert_eq!(clean["status"], "cancelled");
+    assert_eq!(clean["steps"], 1);
+    assert_eq!(clean["abortedTools"], false);
+}
+
+/// 被打断的回合：观测面报「本回合有工具被中断」，取值与载荷口径同源。
+/// 观测面 `Runtime::turn_had_aborted_tools` 是历史派生（最后一条 user 消息之后
+/// 按 ToolCall / ToolResult 成对扫描），无跨回合状态。
+#[test]
+fn interrupted_turn_reports_aborted_tools_on_the_observation_surface() {
+    let dir = tempdir("aborted-flag");
+    let provider = ScriptProvider::new(vec![tool_step(TOOL), text_step("不应到达")]);
+    let rt = build(&dir, provider);
+    let id = new_session(&rt);
+    let (exec, entered_rx, release_tx) = CancellableExec::blocking();
+    rt.set_cancellable_executor(id, exec.clone());
+
+    let (handle, _finished) = spawn_turn(&rt, id, "读文件");
+    entered_rx.recv_timeout(WAIT).expect("工具已开始执行");
+    rt.cancel_session(id).expect("取消");
+    release_tx.send(()).expect("放行");
+    let receipt = join(handle);
+
+    assert_eq!(done_status(&receipt), "cancelled");
+    let flag = rt.turn_had_aborted_tools(id).expect("观测面");
+    assert!(flag, "被打断的回合必须报出「有工具被中断」");
+    // 观测面的取值就是 `done` 载荷里 `abortedTools` 的取值（同一口径）。
+    let payload = agent_core::r#loop::cancel::cancelled_done_payload(1, flag);
+    assert_eq!(payload["abortedTools"], json!(true));
+}
+
+/// 未被打断的回合不得报「有工具被中断」（口径不得串到别的回合）。
+#[test]
+fn clean_turn_reports_no_aborted_tools() {
+    let dir = tempdir("clean-flag");
+    let rt = build(&dir, ScriptProvider::new(vec![text_step("读完了")]));
+    let id = new_session(&rt);
+
+    let receipt = join(spawn_turn(&rt, id, "读文件").0);
+
+    assert_eq!(done_status(&receipt), "completed");
+    assert!(
+        !rt.turn_had_aborted_tools(id).expect("观测面"),
+        "干净回合不得报「有工具被中断」"
+    );
+}
