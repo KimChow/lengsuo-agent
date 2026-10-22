@@ -84,6 +84,13 @@ def _env() -> dict:
     env = dict(os.environ)
     for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
         env.pop(key, None)
+    # 绕开跨线共享的 ~/.cargo/.package-cache 全局单点锁：若本派卡根下存在
+    # 独立 .cargo-home（registry/git 软链复用），就让 cargo 用它 ⇒ 不碰那把锁。
+    # 目录不存在时静默跳过 ⇒ 别的机器/别的仓行为不变。
+    cargo_home = ROOT / ".cargo-home"
+    if cargo_home.is_dir():
+        env["CARGO_HOME"] = str(cargo_home)
+        env.setdefault("CARGO_NET_OFFLINE", "true")
     return env
 
 
