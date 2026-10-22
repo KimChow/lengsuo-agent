@@ -86,7 +86,10 @@ impl FsToolExecutor {
     fn read(&self, args: &Value) -> Result<Value, String> {
         let path = required_str(args, "path")?;
         let max_bytes = optional_u64(args, "max_bytes")?.unwrap_or(DEFAULT_MAX_BYTES);
-        let content = self.toolbox.read(&path, max_bytes).map_err(render)?;
+        let content = self
+            .toolbox
+            .read(&path, max_bytes)
+            .map_err(|e| render(&self.toolbox.workspace, e))?;
         Ok(json!({"path": path, "content": content}))
     }
 
@@ -94,7 +97,9 @@ impl FsToolExecutor {
         let path = required_str(args, "path")?;
         let content = required_str(args, "content")?;
         // `expect_read = true`：覆盖已存在文件前必须先读过（既有协议防呆）。
-        self.toolbox.write(&path, &content, true).map_err(render)?;
+        self.toolbox
+            .write(&path, &content, true)
+            .map_err(|e| render(&self.toolbox.workspace, e))?;
         Ok(json!({"path": path, "written": true}))
     }
 
@@ -107,7 +112,7 @@ impl FsToolExecutor {
         let (entries, total) = self
             .toolbox
             .list_dir(&path, offset, limit)
-            .map_err(render)?;
+            .map_err(|e| render(&self.toolbox.workspace, e))?;
         let items: Vec<Value> = entries
             .iter()
             .map(|e| {
@@ -129,7 +134,10 @@ impl FsToolExecutor {
         let limit = optional_usize(args, "limit")?
             .unwrap_or(DEFAULT_LIMIT)
             .min(MAX_LIMIT);
-        let paths = self.toolbox.glob(&root, &pattern, limit).map_err(render)?;
+        let paths = self
+            .toolbox
+            .glob(&root, &pattern, limit)
+            .map_err(|e| render(&self.toolbox.workspace, e))?;
         Ok(json!({"pattern": pattern, "root": root, "paths": paths}))
     }
 
@@ -142,7 +150,7 @@ impl FsToolExecutor {
         let (hits, total) = self
             .toolbox
             .search(&root, &pattern, limit)
-            .map_err(render)?;
+            .map_err(|e| render(&self.toolbox.workspace, e))?;
         let items: Vec<Value> = hits
             .iter()
             .map(|h| {
@@ -159,7 +167,9 @@ impl FsToolExecutor {
 
     fn delete(&self, args: &Value) -> Result<Value, String> {
         let path = required_str(args, "path")?;
-        self.toolbox.remove(&path).map_err(render)?;
+        self.toolbox
+            .remove(&path)
+            .map_err(|e| render(&self.toolbox.workspace, e))?;
         Ok(json!({"path": path, "deleted": true}))
     }
 }
@@ -172,9 +182,11 @@ impl ToolExecutor for FsToolExecutor {
 
 /// `agent-tools` 的错误 → 工具错误说明（变体可辨，宿主据此分类）。
 ///
-/// ⛔ 不回显参数内容：路径可能含用户敏感信息，只保留 `agent-tools` 已渲染的说明。
-fn render(error: ToolError) -> String {
-    error.to_string()
+/// ⛔ 不回显参数内容：路径可能含用户敏感信息，只保留 `agent-tools` 已渲染的说明，
+/// 且路径一律相对工作区（与成功结果的 `rel_path` 口径一致），不得泄露宿主机的
+/// 绝对目录结构。
+fn render(workspace: &Path, error: ToolError) -> String {
+    error.display_in(workspace)
 }
 
 /// 必填字符串参数：缺失或类型不对 ⇒ 显式错误（点名参数，不回显值）。

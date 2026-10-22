@@ -27,6 +27,7 @@ use tempfile::TempDir;
 
 use agent_core::fs_adapter::FsToolExecutor;
 use agent_core::tool::ToolKind;
+use agent_core::ToolExecutor;
 use tool_fs::tool_specs;
 
 /// 全部六个文件能力名（含 `fs.delete`）——注册面覆盖读/写两类。
@@ -326,4 +327,33 @@ fn 参数形状错误返回显式错误() {
         .dispatch("fs.nuke", &json!({"path": "x"}))
         .expect_err("未认领的工具名必须失败");
     assert!(err.contains("fs.nuke"), "错误文本应含工具名: {err}");
+}
+
+// ---------------------------------------------------------------------------
+// 8) 错误文本不得泄露工作区绝对路径（与能力层的相对化口径一致，模型只见相对路径）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fs_error_不泄露绝对路径() {
+    let (dir, exec) = workspace();
+    let abs = dir
+        .path()
+        .join("nonexistent.txt")
+        .to_string_lossy()
+        .to_string();
+    // 读一个绝对路径的不存在文件：错误应相对化，不含真实绝对路径
+    let err = exec.execute("fs.read", &json!({"path": abs})).unwrap_err();
+    assert!(!err.contains(abs.as_str()), "错误文本不得含绝对路径: {err}");
+    assert!(err.contains("nonexistent.txt"), "错误应保留文件名：{err}");
+    // 越界被拒的路径（在 workspace 之外）保留模型给的原样，但不得泄露 workspace 根
+    let outside = "/tmp/nonexistent.txt";
+    let err = exec
+        .execute("fs.read", &json!({"path": outside}))
+        .unwrap_err();
+    assert!(
+        !err.contains(dir.path().to_string_lossy().as_ref()),
+        "错误文本不得泄露 workspace 绝对路径: {err}"
+    );
+    // 输入本身就带绝对路径时，错误只保留该输入的相对化结果
+    assert!(err.contains(outside), "越界路径应原样返回：{err}");
 }

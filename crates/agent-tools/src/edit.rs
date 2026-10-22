@@ -29,12 +29,12 @@ impl FsToolbox {
             let guarded = self.resolve(Path::new(&op.path));
             let abs = match guarded {
                 Ok(a) => a,
-                Err(e) => return Err(rolled_back(&mut backups, idx, e)),
+                Err(e) => return Err(rolled_back(&self.workspace, &mut backups, idx, e)),
             };
             // 写前快照；失败的操作本身未改动文件，不需要快照。
             let snapshot = read_if_exists(&abs);
             if let Err(e) = self.write_one(&abs, op.content.as_bytes()) {
-                return Err(rolled_back(&mut backups, idx, e));
+                return Err(rolled_back(&self.workspace, &mut backups, idx, e));
             }
             backups.push((abs, snapshot));
         }
@@ -49,9 +49,17 @@ impl FsToolbox {
     }
 }
 
-/// 回滚并组装 `BatchRolledBack`（reason 取原始错误的显示文本）。
-fn rolled_back(backups: &mut Vec<Backup>, idx: usize, err: ToolError) -> ToolError {
-    let reason = err.to_string();
+/// 回滚并组装 `BatchRolledBack`（reason 取原始错误的**相对化**文本）。
+///
+/// ⛔ 这里必须用 [`ToolError::display_in`] 而不是 `to_string()`：`reason` 会
+/// 一路进到工具结果、被模型看到，用 `Display` 会把绝对路径带出去。
+fn rolled_back(
+    workspace: &Path,
+    backups: &mut Vec<Backup>,
+    idx: usize,
+    err: ToolError,
+) -> ToolError {
+    let reason = err.display_in(workspace);
     rollback(backups);
     backups.clear();
     ToolError::BatchRolledBack {
