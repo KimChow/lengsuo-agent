@@ -8,6 +8,8 @@
 //! 本 crate 只做工具执行与抓取，不做权限判定（归 `agent-core` 的权限门），
 //! 也不做 WebSearch（需密钥，由调用方层实现）。
 
+#![forbid(unsafe_code)]
+
 pub mod error;
 pub mod exec;
 pub mod html;

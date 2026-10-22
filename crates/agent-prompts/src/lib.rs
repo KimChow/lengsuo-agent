@@ -31,6 +31,8 @@
 //! assert!(!prompt.contains("## 用户记忆"));                    // 空槽位不留标题
 //! ```
 
+#![forbid(unsafe_code)]
+
 mod assets;
 mod compose;
 mod model;

@@ -5,6 +5,8 @@
 //! 工作区包含判定 → 受保护分量 deny），任一步不通过即 `Denied`。
 //! 同步 IO，不依赖 tokio；不使用 `unsafe`。
 
+#![forbid(unsafe_code)]
+
 mod edit;
 mod error;
 mod fs_ops;

@@ -3,6 +3,8 @@
 //! 层级：身份（SOUL/USER/AI 名）→ 用户记忆（跨会话，默认关）→ 项目记忆 + 当日日志。
 //! 隐私：跨会话层默认关闭；写路径由调用方负责脱敏；凭据绝不入内。
 
+#![forbid(unsafe_code)]
+
 mod caps;
 mod consolidate;
 mod daily;

@@ -25,6 +25,8 @@
 //!
 //! ⛔ 网络错误 / 超时**显式报错**，绝不静默回退到 `EchoProvider` 之类。
 
+#![forbid(unsafe_code)]
+
 pub mod config;
 pub mod request;
 pub mod response;
