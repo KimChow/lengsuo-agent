@@ -129,18 +129,26 @@ pub const TOOL_EVENT_PAYLOAD_KEYS: &[&str] = &[
 
 /// `agent-core` runtime 源文件里**全部**事件 payload 键名（宽面）。
 ///
-/// 这是 [`TOOL_EVENT_PAYLOAD_KEYS`]（工具事件窄面）的**超集**，还含同一批源文件
-/// 里其它事件（`user` / `thinking` / `text` / `done`）的 payload 键。
+/// 这是 [`TOOL_EVENT_PAYLOAD_KEYS`]（工具事件窄面）的**超集**，还含被扫源文件
+/// 里其它事件（`user` / `thinking` / `text` / `done` / `session_update` /
+/// `turn.queue.*` / 技能注入 / 模型重试 …）的 payload 键。
 ///
-/// 覆盖面（两处扫描共用本常量，各扫各的文件、同一个 ⊆ 口径）：
+/// 覆盖面（**三处扫描共用本常量，各扫各的文件、同一个 ⊆ 口径**）：
 /// - **工具事件面**（`tests/session_schema_surface/runtime_payload.rs`）：
 ///   `turns.rs` / `turns_settle.rs` / `tool_result.rs` / `execute.rs`；
 /// - **会话元信息面**（`tests/session_meta_payload_surface.rs`）：
 ///   `sessions.rs` / `context.rs` 发的 `session_update` / `memory_update` /
-///   `warning` / `user` 载荷。后两文件原先**零断言**守着（实现加键或改名时契约
-///   侧静默落后、不变红），该测试把这条缺口补上。
+///   `warning` / `user` 载荷；
+/// - **投递队列 / 技能注入 / 模型重试面**
+///   （`tests/runtime_event_file_coverage.rs`）：`turn_queue.rs`（`turn.{steer,queued}
+///   .enqueued` / `turn.queue.expired` / `turn.{steer,queued}.consumed`）/
+///   `skills.rs`（`SKILL_INJECTED_EVENT`）/ `retry_policy.rs`（`MODEL_RETRY_EVENT`）。
+///   这三个文件原先**零断言**守着（实现加键或改名时契约侧静默落后、不变红），
+///   该测试把这条缺口补上；同一测试还带**覆盖面完备性护栏**：runtime 目录下每个
+///   含 `.emit(` 的文件必须在「已覆盖清单 ∪ 豁免表」内，否则变红（防这类手工清单
+///   缺口再复发）。
 ///
-/// 用途：两处测试对各自那批源文件做**全量**扫描，断言「扫出的键 ⊆ 本常量」——
+/// 用途：三处测试对各自那批源文件做**全量**扫描，断言「扫出的键 ⊆ 本常量」——
 /// 实现侧在**任何**事件 payload 里新增键而契约没登记即红（窄面只管工具事件，
 /// 宽面管全部）。`type` / `message` / `reason` 是**嵌套**错误对象的键（整体挂在
 /// `payload["result"]` 之下），不是 payload 顶层键；它们出现在本常量里是因为
@@ -148,12 +156,18 @@ pub const TOOL_EVENT_PAYLOAD_KEYS: &[&str] = &[
 /// `ok`（`sessions.rs` 的 `execute_memory_tool` **返回值**，非事件载荷）与
 /// `code` / `expertId` / `skill` / `kind` / `mode` / `title`（会话元信息事件的真
 /// 正载荷键）一并登记——口径是「该源文件里 `json!` 块发出的顶层键」，只多不漏。
+/// `tools` / `content`（`SKILL_INJECTED_EVENT` 的工具名列表与段落正文）同理。
 pub const RUNTIME_EVENT_PAYLOAD_KEYS: &[&str] = &[
     "approvalId",
     "args",
     "argsRef",
+    "attempt",
     "chars",
     "code",
+    "content",
+    "delayMs",
+    "enqueuedAtMs",
+    "errorKind",
     "expertId",
     "isError",
     "kind",
@@ -163,18 +177,25 @@ pub const RUNTIME_EVENT_PAYLOAD_KEYS: &[&str] = &[
     "name",
     "note",
     "ok",
+    "ownerRequestId",
+    "path",
     "preview",
     "reason",
     "reminder",
     "result",
     "resultRef",
     "skill",
+    "source",
+    "sourceRef",
     "status",
     "steps",
     "text",
     "title",
     "tool",
     "toolCallId",
+    "tools",
     "tsMs",
     "type",
+    "version",
+    "willRetry",
 ];
