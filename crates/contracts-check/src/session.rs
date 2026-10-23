@@ -127,35 +127,52 @@ pub const TOOL_EVENT_PAYLOAD_KEYS: &[&str] = &[
     "tsMs",
 ];
 
-/// `agent-core` runtime 四份源文件里**全部**事件 payload 键名（宽面）。
+/// `agent-core` runtime 源文件里**全部**事件 payload 键名（宽面）。
 ///
 /// 这是 [`TOOL_EVENT_PAYLOAD_KEYS`]（工具事件窄面）的**超集**，还含同一批源文件
 /// 里其它事件（`user` / `thinking` / `text` / `done`）的 payload 键。
 ///
-/// 用途：`tests/session_schema_surface.rs` 对同一批源文件做**全量**扫描，断言
-/// 「扫出的键 ⊆ 本常量」——实现侧在**任何**事件 payload 里新增键而契约没登记
-/// 即红（窄面只管工具事件，宽面管全部）。`type` / `message` / `reason` 是
-/// **嵌套**错误对象的键（整体挂在 `payload["result"]` 之下），不是 payload 顶层
-/// 键；它们出现在本常量里是因为扫描按 `json!` 块的顶层键抽取，而该 `json!` 块
-/// 本身就是那个嵌套对象。
+/// 覆盖面（两处扫描共用本常量，各扫各的文件、同一个 ⊆ 口径）：
+/// - **工具事件面**（`tests/session_schema_surface/runtime_payload.rs`）：
+///   `turns.rs` / `turns_settle.rs` / `tool_result.rs` / `execute.rs`；
+/// - **会话元信息面**（`tests/session_meta_payload_surface.rs`）：
+///   `sessions.rs` / `context.rs` 发的 `session_update` / `memory_update` /
+///   `warning` / `user` 载荷。后两文件原先**零断言**守着（实现加键或改名时契约
+///   侧静默落后、不变红），该测试把这条缺口补上。
+///
+/// 用途：两处测试对各自那批源文件做**全量**扫描，断言「扫出的键 ⊆ 本常量」——
+/// 实现侧在**任何**事件 payload 里新增键而契约没登记即红（窄面只管工具事件，
+/// 宽面管全部）。`type` / `message` / `reason` 是**嵌套**错误对象的键（整体挂在
+/// `payload["result"]` 之下），不是 payload 顶层键；它们出现在本常量里是因为
+/// 扫描按 `json!` 块的顶层键抽取，而该 `json!` 块本身就是那个嵌套对象。同理
+/// `ok`（`sessions.rs` 的 `execute_memory_tool` **返回值**，非事件载荷）与
+/// `code` / `expertId` / `skill` / `kind` / `mode` / `title`（会话元信息事件的真
+/// 正载荷键）一并登记——口径是「该源文件里 `json!` 块发出的顶层键」，只多不漏。
 pub const RUNTIME_EVENT_PAYLOAD_KEYS: &[&str] = &[
     "approvalId",
     "args",
     "argsRef",
     "chars",
+    "code",
+    "expertId",
     "isError",
+    "kind",
     "maxSteps",
     "message",
+    "mode",
     "name",
     "note",
+    "ok",
     "preview",
     "reason",
     "reminder",
     "result",
     "resultRef",
+    "skill",
     "status",
     "steps",
     "text",
+    "title",
     "tool",
     "toolCallId",
     "tsMs",
