@@ -212,14 +212,24 @@ impl Runtime {
         }
     }
 
+    /// 配置里的语气风格原文；锁中毒/缺省 ⇒ 空串（= 段省略，与接线前等价）。
+    fn tone_style_setting(&self) -> String {
+        self.config
+            .lock()
+            .map(|c| c.tone_style.clone())
+            .unwrap_or_default()
+    }
+
     /// 模板变量：**每个 `PromptVars` 字段都显式赋值**（不再用 `..default()` 掩盖）。
     ///
     /// 来源分三类：
     /// - **运行时事实**：身份层（`read_identity`：AI 名 / 用户称呼 / SOUL）、
     ///   身份四文件正文与路径、`product.json`（产品名 / 数据目录名 / `is_windows`）、
     ///   工作区、日期、记忆四段、专家人格（见 `sessions/product_vars.rs`）；
-    /// - **配置面尚未提供**：`identity_mode`、`user_rules`、`tone_style`、
-    ///   `sub_agent_prompt`、`response_language`、功能开关、工具呈现、产物目录 ——
+    /// - **运行时配置**：`tone_style`（`config:set {"toneStyle": …}`，经
+    ///   [`agent_prompts::style::body_of`] 归一化为正文；空值 ⇒ 段整段省略）；
+    /// - **配置面尚未提供**：`identity_mode`、`user_rules`、`sub_agent_prompt`、
+    ///   `response_language`、功能开关、工具呈现、产物目录 ——
     ///   显式填空串 / `false`（空值 ⇒ 模板既有语义整段省略）；
     /// - **有意留空**：`expert_persona` 专用槽（人格只填 `plugin_agent_prompt` 一处，
     ///   两处同填会渲染两次，见 [`Self::expert_persona`] 文档）。
@@ -246,7 +256,7 @@ impl Runtime {
             workspace: self.redact(&session.workspace_root),
             date: date_text(),
             user_rules: String::new(),
-            tone_style: String::new(),
+            tone_style: agent_prompts::style::body_of(&self.tone_style_setting()),
             plugin_agent_prompt: self.expert_persona(session),
             sub_agent_prompt: String::new(),
             response_language: String::new(),

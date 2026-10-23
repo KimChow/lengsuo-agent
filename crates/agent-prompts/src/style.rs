@@ -4,7 +4,7 @@
 //! 高于风格。模式模板与变量注入见 [`crate::model`] / [`crate::compose`]。
 //!
 //! 数据流（本地对照资料 07 §4 与 18 §13 的组装位）：
-//! - 宿主取 [`ToneStyle::content`] 填入 `PromptVars.tone_style`；
+//! - 宿主取 [`body_of`]（或 [`ToneStyle::content`]）填入 `PromptVars.tone_style`；
 //! - [`crate::Composer::build`] 在公共层末尾以 `<tone_and_style>` 包裹成段，
 //!   空值整段省略（见 `templates/common/mod.rs::tone_style_segment`）；
 //! - 需要独立成块的调用方可直接用 [`render`]（含枚举名归一化与自由文本分支）。
@@ -80,6 +80,25 @@ pub const TONE_AND_STYLE_HEADER: &str =
 /// 风格段尾标签。
 pub const TONE_AND_STYLE_FOOTER: &str = "</tone_and_style>";
 
+/// 把风格输入归一化为**正文**（不含 `<tone_and_style>` 标签）。
+///
+/// 空串或纯空白 ⇒ 空串（调用方据此整段省略）；
+/// 七个枚举名之一（大小写不敏感，`-` / `_` 与无分隔等价）⇒ [`ToneStyle::content`]；
+/// 其余自由文本 ⇒ 原样（trim 后）。
+///
+/// 宿主填 `PromptVars.tone_style` 时用本函数：段模板已自带 header/footer，
+/// 填 [`render`] 的输出会造成双层 `<tone_and_style>` 包裹。
+pub fn body_of(tone_style: &str) -> String {
+    let trimmed = tone_style.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    match ToneStyle::from_name(trimmed) {
+        Some(style) => style.content().to_string(),
+        None => trimmed.to_string(),
+    }
+}
+
 /// 把风格输入渲染为完整 `<tone_and_style>` 区块。
 ///
 /// 三个分支：
@@ -88,14 +107,10 @@ pub const TONE_AND_STYLE_FOOTER: &str = "</tone_and_style>";
 ///    [`ToneStyle::content`] 作正文；
 /// 3. 其余自由文本 ⇒ 按原样作正文（宿主可传自定义风格）。
 pub fn render(tone_style: &str) -> String {
-    let trimmed = tone_style.trim();
-    if trimmed.is_empty() {
+    let body = body_of(tone_style);
+    if body.is_empty() {
         return String::new();
     }
-    let body = match ToneStyle::from_name(trimmed) {
-        Some(style) => style.content(),
-        None => trimmed,
-    };
     format!("{TONE_AND_STYLE_HEADER}{body}\n{TONE_AND_STYLE_FOOTER}")
 }
 

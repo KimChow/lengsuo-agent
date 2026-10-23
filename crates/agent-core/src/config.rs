@@ -40,6 +40,12 @@ pub struct RuntimeConfig {
     /// 0/负数/非整数一律 `InvalidConfig` 且整体失败、原配置不变）。
     #[serde(default = "default_max_turn_steps")]
     pub max_turn_steps: usize,
+    /// 语气风格（x-tone-style-wire）：空串 = 无风格（`<tone_and_style>` 整段省略）。
+    ///
+    /// 取值可为七个风格枚举名之一（大小写不敏感，`-` / `_` 与无分隔等价），
+    /// 也可为自定义自由文本；归一化由 `agent_prompts::style::body_of` 完成。
+    #[serde(default)]
+    pub tone_style: String,
 }
 
 /// serde 缺字段默认值（与 [`RuntimeConfig::default_v0`] 保持一致）。
@@ -56,6 +62,7 @@ impl RuntimeConfig {
             default_mode: Mode::Ask,
             memory_enabled: false,
             max_turn_steps: DEFAULT_MAX_TURN_STEPS,
+            tone_style: String::new(),
         }
     }
 
@@ -77,6 +84,15 @@ impl RuntimeConfig {
                         CoreError::InvalidConfig(format!("memoryEnabled 非法: {value}"))
                     })?;
                     next.memory_enabled = b;
+                }
+                "toneStyle" => {
+                    let s = value.as_str().ok_or_else(|| {
+                        CoreError::InvalidConfig(format!("toneStyle 非法: {value}"))
+                    })?;
+                    if s.chars().any(char::is_control) {
+                        return Err(CoreError::InvalidConfig("toneStyle 不得含控制字符".into()));
+                    }
+                    next.tone_style = s.to_string();
                 }
                 "defaultMode" => {
                     let mode = serde_json::from_value::<Mode>(value.clone()).map_err(|_| {
