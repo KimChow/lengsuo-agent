@@ -20,9 +20,9 @@
 
 - 监听：`127.0.0.1` **随机端口** + 握手文件 `%LOCALAPPDATA%/lengsuo/gateway.json`（`{port, pid, token}`，文件 ACL 限当前用户）；token 启动时生成，**退出即失效**。
 - RPC：单入口 `POST /rpc`，body `{action: "<域>:<动作>", payload}`；信封 `{code, msg, data}`（`code==0` 成功；404 未注册动作、403 鉴权拒绝、408 超时；其余按 server-contract 错误码段）。默认 30s 超时。
-- 事件：`GET /events`（WebSocket）；事件名 `thinking / text / tool_use / tool_result / approval_request / files / done`（参考客户端 基线 §5）+ `session_update`；一行一个 JSON。
-- v0 动作面：`session:list/create/get/send/stop/replay`、`approval:respond`、`config:get/set`、`tool:list`、`sys:ping`。`session:replay` 于 2026-10-19 按「只增不改」追加（payload `{id, afterSeq, limit?}`，返回 `{events, lastSeq}`，`seq > afterSeq` 升序一页）。其余动作 404，不预留半成品。
-- 鉴权：所有请求头 `X-Gateway-Token`；失败 403；登录态/租户隔离键随 payload（v0 单用户本地，字段预留）。
+- 事件：`GET /events`（WebSocket）；事件名（单一来源 `crates/contracts-check/src/events.rs::EVENT_KINDS`，11 项）`thinking / text / tool_use / tool_result / approval_request / approval_resolved / files / done / error / session_update / user`；只增不改：新增 kind 必须先登记 `EVENT_KINDS` 再改本文；一行一个 JSON。
+- v0 动作面：`session:list/create/get/send/stop/replay/cancel`、`approval:respond`、`config:get/set`、`tool:list`、`sys:ping`（12 项；`session:cancel` 于 2026-10-23 按「只增不改」补登记，台账见 `docs/contracts/acp-method-ledger.md` §1）。`session:replay` 于 2026-10-19 按「只增不改」追加（payload `{id, afterSeq, limit?}`，返回 `{events, lastSeq}`，`seq > afterSeq` 升序一页）。其余动作 404，不预留半成品。
+- 鉴权：所有请求头 `X-Gateway-Token`；失败 403；身份/租户/环境由**宿主绑定**（`GatewayConfig.isolation`）；payload 携带 `isolation` / `envBinding` / `env_binding` 一律 403 `server-bound identity`；读/写类动作按 `own()` 做归属校验（跨隔离 → 403）。
 
 ## 3. 会话与事件 schema v0（F7 定稿初版）
 
@@ -75,7 +75,7 @@ Event  { seq, session_id, kind, payload, ts_ms }   // seq 会话内单调递增�
 |---|---|
 | 卡 A 会话启动 | 2026-10-16，1.47 `/home/ubuntu/lengsuo-client-dev/wt-agent-runtime` |
 | 卡 B 会话启动 | 2026-10-16，1.47 `/home/ubuntu/lengsuo-client-dev/wt-gpui-shell` |
-| 网关协议 v0 | 本文 §2–§5 即初版冻结；变更走本文变更记录 |
+| 网关协议 v0 | 本文 §2–§5 即初版冻结；变更走本文变更记录。2026-10-23：三 crate（agent-acp / agent-gateway / contracts-check）49 个测试二进制 328 passed / 0 failed；协议面无已知代码缺口；剩余为 `docs/contracts/acp-host.md` §7 的三项拓扑决策 |
 
 ## 变更记录
 
@@ -83,3 +83,4 @@ Event  { seq, session_id, kind, payload, ts_ms }   // seq 会话内单调递增�
 |---|---|
 | 2026-10-16 | 初版：crate 划分、网关协议 v0、schema v0（F7 初版定稿）、权限门、存储抽象、测试计划、分工卡；M1 双会话在 1.47 启动 |
 | 2026-10-19 | 动作面追加 `session:replay`（事件回放，只增不改）；握手文件 Windows ACL 落地：DACL 重建为仅当前用户单条 allow ACE + `PROTECTED_DACL` 切断继承，ACL 失败删文件 fail-closed（真机 `icacls` 验证仅 `\<user>:(M)`） |
+| 2026-10-23 | §2 与实现同步：事件枚举补全为 11 类（此前只列 8 项，缺 `approval_resolved` / `error` / `user`；单一来源 `EVENT_KINDS`）；动作面补 `session:cancel` 至 12 项（来自提交 `08b9f40`，台账 §1 已登记）；鉴权行由「payload 携带隔离键」改为宿主绑定口径（payload 携带 `isolation`/`envBinding` → 403，`own()` 归属校验，跨隔离 → 403）。依据：三 crate 49 个测试二进制 328 passed / 0 failed、`V0_ACTIONS`、`EVENT_KINDS`。新增守卫 `crates/contracts-check/tests/kickoff_drift_guard.rs` 防再漂移 |
