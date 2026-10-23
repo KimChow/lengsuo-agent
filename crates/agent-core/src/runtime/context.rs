@@ -212,11 +212,20 @@ impl Runtime {
         }
     }
 
-    /// 配置里的语气风格原文；锁中毒/缺省 ⇒ 空串（= 段省略，与接线前等价）。
-    fn tone_style_setting(&self) -> String {
+    /// 运行时配置快照：一次加锁取全（锁中毒 ⇒ 默认值）。
+    ///
+    /// 返回 `(tone_style, user_rules, response_language)` 原文。提示词变量里有三项
+    /// 来自运行时配置，一次取全既避免重复加锁，也保证**同一回合内三者一致**。
+    fn prompt_settings(&self) -> (String, String, String) {
         self.config
             .lock()
-            .map(|c| c.tone_style.clone())
+            .map(|c| {
+                (
+                    c.tone_style.clone(),
+                    c.user_rules.clone(),
+                    c.response_language.clone(),
+                )
+            })
             .unwrap_or_default()
     }
 
@@ -226,10 +235,15 @@ impl Runtime {
     /// - **运行时事实**：身份层（`read_identity`：AI 名 / 用户称呼 / SOUL）、
     ///   身份四文件正文与路径、`product.json`（产品名 / 数据目录名 / `is_windows`）、
     ///   工作区、日期、记忆四段、专家人格（见 `sessions/product_vars.rs`）；
-    /// - **运行时配置**：`tone_style`（`config:set {"toneStyle": …}`，经
-    ///   [`agent_prompts::style::body_of`] 归一化为正文；空值 ⇒ 段整段省略）；
-    /// - **配置面尚未提供**：`identity_mode`、`user_rules`、`sub_agent_prompt`、
-    ///   `response_language`、功能开关、工具呈现、产物目录 ——
+    /// - **运行时配置**（`config:set`）：`tone_style`（`toneStyle`，经
+    ///   [`agent_prompts::style::body_of`] 归一化为正文）、`user_rules`（`userRules`，
+    ///   渲染「## 用户自定义规则」段）、`response_language`（`responseLanguage`，
+    ///   解析为**整句语言指令**，见 [`resolve_response_language`]）；
+    ///   三者空值 ⇒ 对应段整段省略；
+    /// - **由文件事实推导**：`identity_mode`（`BOOTSTRAP.md` 存在 ⇒ `onboarding`，
+    ///   否则 `normal`；推导在 `sessions/product_vars.rs`，与参考端
+    ///   `IdentityCollector` 同形）；
+    /// - **配置面尚未提供**：`sub_agent_prompt`、功能开关、工具呈现、产物目录 ——
     ///   显式填空串 / `false`（空值 ⇒ 模板既有语义整段省略）；
     /// - **有意留空**：`expert_persona` 专用槽（人格只填 `plugin_agent_prompt` 一处，
     ///   两处同填会渲染两次，见 [`Self::expert_persona`] 文档）。
@@ -239,6 +253,7 @@ impl Runtime {
     fn prompt_vars(&self, session: &Session, memory: &TurnMemory) -> PromptVars {
         let identity = self.read_identity(&session.workspace_root);
         let product = self.product_vars(&session.workspace_root);
+        let (tone_style, user_rules, response_language) = self.prompt_settings();
         PromptVars {
             product_name: self.redact(&product.product_name),
             data_folder_name: self.redact(&product.data_folder_name),
@@ -248,18 +263,18 @@ impl Runtime {
             identity: self.redact(&product.identity),
             user: self.redact(&product.user),
             bootstrap: self.redact(&product.bootstrap),
-            identity_mode: String::new(),
+            identity_mode: product.identity_mode.clone(),
             soul_path: product.soul_path,
             identity_path: product.identity_path,
             user_path: product.user_path,
             bootstrap_path: product.bootstrap_path,
             workspace: self.redact(&session.workspace_root),
             date: date_text(),
-            user_rules: String::new(),
-            tone_style: agent_prompts::style::body_of(&self.tone_style_setting()),
+            user_rules: self.redact(&user_rules),
+            tone_style: agent_prompts::style::body_of(&tone_style),
             plugin_agent_prompt: self.expert_persona(session),
             sub_agent_prompt: String::new(),
-            response_language: String::new(),
+            response_language: resolve_response_language(&response_language),
             is_windows: product.is_windows,
             feature_browser_use: false,
             feature_computer_use: false,
@@ -440,4 +455,65 @@ fn redact_static(text: &str) -> String {
 /// 确定性日期文本（本地日期；不引入时刻，保证同一天内同输入同输出）。
 fn date_text() -> String {
     chrono::Local::now().date_naive().to_string()
+}
+
+/// 回复语言的中文分支文案（与参考端 `resolveResponseLanguage` 逐字一致）。
+const RESPONSE_LANGUAGE_ZH: &str = "当前处于中文环境，使用简体中文回答 (Speak in Chinese).";
+
+/// 回复语言的英文分支文案（与参考端逐字一致，三行）。
+const RESPONSE_LANGUAGE_EN: &str = "Your output language MUST be English by default.
+If the user's message (<user_query>) is written in Chinese, respond in Chinese instead.
+IMPORTANT: Base your language decision solely on the natural language of the user's message, not on technical content like code, paths, or logs.";
+
+/// 把配置里的语言标识解析为**整句指令**。
+///
+/// 参考端的 `ResponseLanguage` 变量值是一整句话（不是语言名），模板侧用
+/// `'中文' in ResponseLanguage` 判分支 —— 与 `agent-prompts` 的
+/// `contains("response_language", "中文")` 条件逐条对应，故此处必须产出整句。
+///
+/// 判定同参考端 `resolveResponseLocaleIsZh`：
+/// 1. 显式值以 `zh` 开头（大小写不敏感）⇒ 中文；
+/// 2. 显式值非空且非 `zh*` ⇒ 英文；
+/// 3. **未声明 ⇒ 中文**——参考端此时查系统 locale 并叠加 `isOversea`；
+///    本仓不读系统 locale（需新增平台依赖，违反「不加依赖」约束），按产品默认
+///    地域（非海外、中文优先）取中文分支。该差异已记入 `docs/prompt-config-wire-status.md`。
+fn resolve_response_language(configured: &str) -> String {
+    let value = configured.trim();
+    let is_zh = value.is_empty() || value.to_ascii_lowercase().starts_with("zh");
+    if is_zh {
+        RESPONSE_LANGUAGE_ZH.to_string()
+    } else {
+        RESPONSE_LANGUAGE_EN.to_string()
+    }
+}
+
+#[cfg(test)]
+mod prompt_language_tests {
+    use super::{resolve_response_language, RESPONSE_LANGUAGE_EN, RESPONSE_LANGUAGE_ZH};
+
+    /// 未声明 / `zh*`（大小写不敏感）⇒ 中文整句。
+    #[test]
+    fn zh_by_default_and_by_prefix() {
+        for value in ["", "   ", "zh", "zh-CN", "ZH-cn"] {
+            assert_eq!(
+                resolve_response_language(value),
+                RESPONSE_LANGUAGE_ZH,
+                "value={value:?} 必须解析为中文整句"
+            );
+        }
+    }
+
+    /// 非空且非 `zh*` ⇒ 英文整句（三行原文）。
+    #[test]
+    fn non_zh_falls_back_to_english() {
+        for value in ["en-US", "en", "ja-JP"] {
+            assert_eq!(
+                resolve_response_language(value),
+                RESPONSE_LANGUAGE_EN,
+                "value={value:?} 必须解析为英文整句"
+            );
+        }
+        assert!(RESPONSE_LANGUAGE_EN.contains("Your output language MUST be English by default."));
+        assert!(RESPONSE_LANGUAGE_ZH.contains("Speak in Chinese"));
+    }
 }

@@ -268,12 +268,17 @@ fn missing_product_json_degrades_to_empty_without_panic() {
 ///
 /// 两条断言各有分工：
 /// - **目录口径**：四文件写在 `MemoryPaths::identity_dir()` 下 ⇒ 运行时读得到
-///   （读不到的话 SOUL 段会是空的，`<identity_context>` 也永远不出现）；
-/// - **`identity_mode` 未声明 ⇒ 身份段不渲染**（D3 定死空串，不猜值）。
+///   （读不到的话 SOUL 段会是空的，`<identity_context>` 里的正文也是空的）；
+/// - **`identity_mode` 由文件事实推导 ⇒ 身份段必渲染**。
 ///
-/// 身份**正文与路径**本身由 `product_vars.rs` 的单元测试断言
-/// （`runtime_product_vars_reads_bodies_paths_and_product_config`）——
-/// `identity_mode` 为空时它们在主模板里没有落点，只有变量层能观测。
+/// ⚠️ 口径变更（`x-prompt-config-wire` 卡）：本文件原先断言
+/// 「`identity_mode` 未声明（空串）⇒ 身份段不渲染」（D3 定死空串）。该口径已被
+/// 参考端实物推翻 —— 其 `IdentityCollector` 里
+/// `WorkspaceIdentityMode = fileExists(BOOTSTRAP.md) ? "onboarding" : "normal"`，
+/// **正常路径永远二选一**，只有抛异常才是空串。故此处改为断言「必渲染」，
+/// 并在写了 BOOTSTRAP.md 的前提下断言走 onboarding 分支。
+///
+/// 身份**正文与路径**本身另由 `product_vars.rs` 的单元测试断言。
 #[test]
 fn identity_files_live_in_memory_identity_dir() {
     let (capture, rt) = runtime("identity");
@@ -297,7 +302,11 @@ fn identity_files_live_in_memory_identity_dir() {
         "SOUL.md 正文必须经既有身份层读取进入提示词:\n{prompt}"
     );
     assert!(
-        !prompt.contains("<identity_context>"),
-        "identity_mode 未声明（空串）⇒ 身份段不渲染:\n{prompt}"
+        prompt.contains("<identity_context>"),
+        "identity_mode 由 BOOTSTRAP.md 存在性推导（onboarding/normal）⇒ 身份段必渲染:\n{prompt}"
+    );
+    assert!(
+        prompt.contains("（onboarding）"),
+        "写了 BOOTSTRAP.md ⇒ 必须走 onboarding 分支:\n{prompt}"
     );
 }
