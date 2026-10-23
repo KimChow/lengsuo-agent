@@ -46,5 +46,5 @@ pub use model::{
     Cond, PromptMode, PromptTemplate, PromptVariant, PromptVars, Segment, PROMPT_VAR_KEYS,
     WORK_MODE_KEY,
 };
-pub use style::{ToneStyle, TONE_AND_STYLE_HEADER};
+pub use style::{body_of, ToneStyle, TONE_AND_STYLE_HEADER};
 pub use template::{template_for, template_for_variant};
