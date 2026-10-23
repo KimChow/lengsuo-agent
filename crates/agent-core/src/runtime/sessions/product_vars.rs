@@ -77,6 +77,36 @@ pub(crate) struct ProductVars {
     pub bootstrap_path: String,
     /// 是否 Windows 平台（product.json 的显式字段；缺省 `false`）。
     pub is_windows: bool,
+    /// 身份注入模式：`onboarding` / `normal`。
+    ///
+    /// 取 `onboarding` **当且仅当 `BOOTSTRAP.md` 存在**——与参考端
+    /// `IdentityCollector` 逐条同形（`s = fileExists(BOOTSTRAP.md)`，
+    /// `WorkspaceIdentityMode = s ? "onboarding" : "normal"`）。
+    /// 参考端只在「专家回合」跳过 BOOTSTRAP 判定；本仓运行时无专家回合分支，
+    /// 故恒走非专家判定（专家人格走 `plugin_agent_prompt` 单独一路）。
+    pub identity_mode: String,
+}
+
+/// 身份文件正文的截断上限（字符数）。
+///
+/// 【出处：参考端 `IdentityCollector` 的 `truncateContent(content, xl)`，
+/// 其中 `xl = 1e4`】。超限时截断并追加固定标记，避免单个身份文件把上下文吃满。
+const IDENTITY_TRUNCATE_CHARS: usize = 10_000;
+
+/// 超限截断标记（与参考端逐字一致）。
+const TRUNCATED_SUFFIX: &str = "\n... (content truncated — exceeded character limit)";
+
+/// 超限截断：不超限原样返回，超限取前 [`IDENTITY_TRUNCATE_CHARS`] 个字符并加标记。
+///
+/// 按 **char** 取前缀而非按字节，避免切坏多字节字符（参考端按 UTF-16 长度截断，
+/// 与按 char 截断在 BMP 内等价；本仓正文为中文/BMP 为主）。
+fn truncate_body(body: &str) -> String {
+    if body.chars().count() <= IDENTITY_TRUNCATE_CHARS {
+        return body.to_string();
+    }
+    let mut out: String = body.chars().take(IDENTITY_TRUNCATE_CHARS).collect();
+    out.push_str(TRUNCATED_SUFFIX);
+    out
 }
 
 impl Runtime {
@@ -85,17 +115,24 @@ impl Runtime {
         let paths = MemoryPaths::new(self.workdir.join(".lengsuo"), workspace_root);
         let dir = paths.identity_dir();
         let product = read_product_config(&paths.home);
+        // 身份注入模式由**文件存在性**决定，不由配置声明（参考端同形）。
+        let identity_mode = if dir.join(BOOTSTRAP_FILE).is_file() {
+            "onboarding"
+        } else {
+            "normal"
+        };
         ProductVars {
             product_name: product.product_name,
             data_folder_name: product.data_folder_name,
-            identity: read_text(&dir.join(IDENTITY_FILE)),
-            user: read_text(&dir.join(USER_FILE)),
-            bootstrap: read_text(&dir.join(BOOTSTRAP_FILE)),
+            identity: truncate_body(&read_text(&dir.join(IDENTITY_FILE))),
+            user: truncate_body(&read_text(&dir.join(USER_FILE))),
+            bootstrap: truncate_body(&read_text(&dir.join(BOOTSTRAP_FILE))),
             soul_path: path_text(&dir.join(SOUL_FILE)),
             identity_path: path_text(&dir.join(IDENTITY_FILE)),
             user_path: path_text(&dir.join(USER_FILE)),
             bootstrap_path: path_text(&dir.join(BOOTSTRAP_FILE)),
             is_windows: product.is_windows,
+            identity_mode: identity_mode.to_string(),
         }
     }
 }
