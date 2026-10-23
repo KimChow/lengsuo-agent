@@ -198,8 +198,26 @@ fn event_to_envelope_keys_equal_registered_frame_keys() {
 
 // ---- 断言 4：帧顶层键面与事件载荷键面不相交（防顶层与载荷串键） ----
 
+// ⚠️ 具名例外（2026-10-24）：`kind` 在帧顶层与载荷层都真实存在，不是实现缺陷——
+//   帧顶层 `kind` = 事件类型判别符（`text` / `warning` / `session_update` …）；
+//   载荷层 `kind` = 该事件的**子类**（`warning` 的 `memory_compose_failed` /
+//   `skill_injection_rejected` / `expert_persona_unavailable` 等）。
+//   生产源码 6 处 emit 点（`agent-core/src/runtime/sessions.rs:63,166`、
+//   `agent-core/src/runtime/context.rs:118,135,206,318`）均以 `json!({ "kind": … })`
+//   发出载荷层 `kind`。⇒「宽面登记 ⊇ 源文件全部载荷键」是实质不变量（防实现静默
+//   加键），「宽面 ∩ 帧键 == ∅」是风格性防线；二者在事实上不可兼得 ⇒ 后者让位。
+//   ⇒ 仅对 `kind` 开有据例外；其余任何重名照旧为红。
+const FRAME_KEY_PAYLOAD_EXEMPT: &[&str] = &["kind"];
+
 #[test]
 fn frame_keys_do_not_collide_with_event_payload_keys() {
+    // 防豁免腐烂：例外项必须真的在帧顶层键面里；`kind` 一旦不再是帧键即应移除例外。
+    for k in FRAME_KEY_PAYLOAD_EXEMPT {
+        assert!(
+            EVENT_FRAME_KEYS.contains(k),
+            "豁免项 {k:?} 已不在帧顶层键面，请从 FRAME_KEY_PAYLOAD_EXEMPT 移除"
+        );
+    }
     for (name, payload_keys) in [
         ("TOOL_EVENT_PAYLOAD_KEYS", TOOL_EVENT_PAYLOAD_KEYS),
         ("RUNTIME_EVENT_PAYLOAD_KEYS", RUNTIME_EVENT_PAYLOAD_KEYS),
@@ -208,6 +226,7 @@ fn frame_keys_do_not_collide_with_event_payload_keys() {
             .iter()
             .copied()
             .filter(|k| payload_keys.contains(k))
+            .filter(|k| !FRAME_KEY_PAYLOAD_EXEMPT.contains(k))
             .collect();
         assert!(
             overlap.is_empty(),
